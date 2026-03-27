@@ -6,19 +6,19 @@ import { blake2s } from "@noble/hashes/blake2.js"
 import { hmac } from "@noble/hashes/hmac.js"
 
 export class Blake2s {
-  private h: ReturnType<typeof blake2s.create>
+  #h: ReturnType<typeof blake2s.create>
 
   constructor(outLen: number = 32, key?: Uint8Array) {
-    this.h = blake2s.create({ dkLen: outLen, key })
+    this.#h = blake2s.create({ dkLen: outLen, key })
   }
 
   update(data: Uint8Array): this {
-    this.h.update(data)
+    this.#h.update(data)
     return this
   }
 
   digest(): Uint8Array {
-    return this.h.digest()
+    return this.#h.digest()
   }
 }
 

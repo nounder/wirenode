@@ -1,7 +1,7 @@
 /**
  * WireGuard Noise_IKpsk2 handshake protocol.
  */
-import { randomBytes } from "crypto"
+import * as NCrypto from "node:crypto"
 import * as Blake2s from "../crypto/Blake2s.ts"
 import * as ChaCha20Poly1305 from "../crypto/ChaCha20Poly1305.ts"
 import * as Curve25519 from "../crypto/Curve25519.ts"
@@ -53,13 +53,14 @@ const InitialHash = (() => {
 
 const ZeroNonce = new Uint8Array(12)
 
-export const enum HandshakeState {
-  Zeroed = 0,
-  InitiationCreated = 1,
-  InitiationConsumed = 2,
-  ResponseCreated = 3,
-  ResponseConsumed = 4,
-}
+export const HandshakeState = {
+  Zeroed: 0,
+  InitiationCreated: 1,
+  InitiationConsumed: 2,
+  ResponseCreated: 3,
+  ResponseConsumed: 4,
+} as const
+export type HandshakeState = typeof HandshakeState[keyof typeof HandshakeState]
 
 export interface Keypair {
   sendKey: Uint8Array
@@ -103,7 +104,7 @@ function mixKey(chainKey: Uint8Array, data: Uint8Array): Uint8Array {
 }
 
 function newIndex(): number {
-  const buf = randomBytes(4)
+  const buf = NCrypto.randomBytes(4)
   return buf.readUInt32LE(0)
 }
 

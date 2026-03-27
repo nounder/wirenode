@@ -1,9 +1,8 @@
 /**
  * WireGuard device: peers, encryption/decryption, and UDP transport.
  */
-import { createSocket, Socket as UDPSocket } from "dgram"
-import type { RemoteInfo } from "dgram"
-import { EventEmitter } from "events"
+import * as NDgram from "node:dgram"
+import * as NEvents from "node:events"
 import * as Curve25519 from "../crypto/Curve25519.ts"
 import * as ChaCha20Poly1305 from "../crypto/ChaCha20Poly1305.ts"
 import * as Handshake from "../noise/Handshake.ts"
@@ -28,28 +27,28 @@ export interface DeviceConfig {
  * - "error" (err: Error) - non-fatal error
  * - "handshakeComplete" (peer: Peer) - handshake completed with a peer
  */
-export class Device extends EventEmitter {
+export class Device extends NEvents.EventEmitter {
   readonly privateKey: Uint8Array
   readonly publicKey: Uint8Array
   readonly mtu: number
 
-  private socket: UDPSocket | null = null
-  private peers: Map<string, Peer> = new Map() // publicKeyHex -> Peer
-  private indexTable: Map<
+  #socket: NDgram.Socket | null = null
+  #peers: Map<string, Peer> = new Map() // publicKeyHex -> Peer
+  #indexTable: Map<
     number,
     { peer: Peer; keypair?: Handshake.Keypair; handshake?: Handshake.HandshakeContext }
   > = new Map()
-  private cookieGenerators: Map<string, Cookie.CookieGenerator> = new Map() // per peer
-  private cookieChecker: Cookie.CookieChecker
-  private listenPort: number
+  #cookieGenerators: Map<string, Cookie.CookieGenerator> = new Map() // per peer
+  #cookieChecker: Cookie.CookieChecker
+  #listenPort: number
 
   constructor(config: DeviceConfig) {
     super()
     this.privateKey = config.privateKey
     this.publicKey = Curve25519.publicKey(config.privateKey)
     this.mtu = config.mtu ?? 1420
-    this.listenPort = config.listenPort ?? 0
-    this.cookieChecker = new Cookie.CookieChecker(this.publicKey)
+    this.#listenPort = config.listenPort ?? 0
+    this.#cookieChecker = new Cookie.CookieChecker(this.publicKey)
 
     for (const peerConfig of config.peers) {
       this.addPeer(peerConfig)
@@ -58,21 +57,21 @@ export class Device extends EventEmitter {
 
   addPeer(config: PeerConfig): Peer {
     const peer = new Peer(config, this.privateKey)
-    this.peers.set(peer.publicKeyHex, peer)
+    this.#peers.set(peer.publicKeyHex, peer)
 
     // Cookie generator for this peer
     const cookieGen = new Cookie.CookieGenerator(config.publicKey)
-    this.cookieGenerators.set(peer.publicKeyHex, cookieGen)
+    this.#cookieGenerators.set(peer.publicKeyHex, cookieGen)
 
     // When keypair is ready, flush staged packets
     peer.on("keypairReady", () => {
-      this.flushStagedPackets(peer)
+      this.#flushStagedPackets(peer)
       this.emit("handshakeComplete", peer)
     })
 
     // Keepalive
     peer.on("sendKeepalive", () => {
-      this.sendKeepalive(peer)
+      this.#sendKeepalive(peer)
     })
 
     return peer
@@ -80,41 +79,41 @@ export class Device extends EventEmitter {
 
   async up(): Promise<void> {
     return new Promise((resolve) => {
-      this.socket = createSocket("udp4")
-      this.socket.on("message", (msg, rinfo) => this.handleIncoming(msg, rinfo))
-      this.socket.on("error", (err) => this.emit("error", err))
-      this.socket.bind(this.listenPort, () => {
-        const addr = this.socket!.address()
-        this.listenPort = addr.port
+      this.#socket = NDgram.createSocket("udp4")
+      this.#socket.on("message", (msg, rinfo) => this.#handleIncoming(msg, rinfo))
+      this.#socket.on("error", (err) => this.emit("error", err))
+      this.#socket.bind(this.#listenPort, () => {
+        const addr = this.#socket!.address()
+        this.#listenPort = addr.port
         resolve()
       })
     })
   }
 
   async down(): Promise<void> {
-    for (const peer of this.peers.values()) {
+    for (const peer of this.#peers.values()) {
       peer.destroy()
     }
-    this.peers.clear()
-    this.indexTable.clear()
-    if (this.socket) {
+    this.#peers.clear()
+    this.#indexTable.clear()
+    if (this.#socket) {
       return new Promise((resolve) => {
-        this.socket!.close(() => resolve())
-        this.socket = null
+        this.#socket!.close(() => resolve())
+        this.#socket = null
       })
     }
   }
 
   getPort(): number {
-    return this.listenPort
+    return this.#listenPort
   }
 
   getPeer(publicKeyHex: string): Peer | undefined {
-    return this.peers.get(publicKeyHex)
+    return this.#peers.get(publicKeyHex)
   }
 
   getPeers(): Peer[] {
-    return [...this.peers.values()]
+    return [...this.#peers.values()]
   }
 
   initiateHandshake(peer: Peer): void {
@@ -126,13 +125,13 @@ export class Device extends EventEmitter {
       const msg = Handshake.createMessageInitiation(peer.handshake, this.publicKey, this.privateKey)
 
       // Register local index
-      this.indexTable.set(peer.handshake.localIndex, { peer, handshake: peer.handshake })
+      this.#indexTable.set(peer.handshake.localIndex, { peer, handshake: peer.handshake })
 
       // Add MACs
-      const cookieGen = this.cookieGenerators.get(peer.publicKeyHex)
+      const cookieGen = this.#cookieGenerators.get(peer.publicKeyHex)
       if (cookieGen) cookieGen.addMacs(msg)
 
-      this.sendToEndpoint(peer, msg)
+      this.#sendToEndpoint(peer, msg)
     } catch (err) {
       this.emit("error", err)
     }
@@ -155,10 +154,10 @@ export class Device extends EventEmitter {
       return
     }
 
-    this.encryptAndSend(peer, keypair, data)
+    this.#encryptAndSend(peer, keypair, data)
   }
 
-  private encryptAndSend(peer: Peer, keypair: Handshake.Keypair, plaintext: Uint8Array): void {
+  #encryptAndSend(peer: Peer, keypair: Handshake.Keypair, plaintext: Uint8Array): void {
     const nonce = keypair.sendNonce++
 
     if (nonce >= Handshake.RejectAfterMessages) {
@@ -191,17 +190,17 @@ export class Device extends EventEmitter {
     view.setUint32(Handshake.MessageTransportOffsetCounter + 4, (nonce / 0x100000000) >>> 0, true)
     msg.set(encrypted, Handshake.MessageTransportOffsetContent)
 
-    this.sendToEndpoint(peer, msg)
+    this.#sendToEndpoint(peer, msg)
     peer.lastSentPacket = Date.now()
   }
 
-  private sendKeepalive(peer: Peer): void {
+  #sendKeepalive(peer: Peer): void {
     const keypair = peer.getSendKeypair()
     if (!keypair) return
-    this.encryptAndSend(peer, keypair, new Uint8Array(0))
+    this.#encryptAndSend(peer, keypair, new Uint8Array(0))
   }
 
-  private flushStagedPackets(peer: Peer): void {
+  #flushStagedPackets(peer: Peer): void {
     const packets = peer.stagedPackets
     peer.stagedPackets = []
     for (const pkt of packets) {
@@ -210,7 +209,7 @@ export class Device extends EventEmitter {
     peer.startKeepalive()
   }
 
-  private handleIncoming(buf: Buffer, rinfo: RemoteInfo): void {
+  #handleIncoming(buf: Buffer, rinfo: NDgram.RemoteInfo): void {
     const msg = new Uint8Array(buf)
     if (msg.length < 4) return
 
@@ -218,35 +217,35 @@ export class Device extends EventEmitter {
 
     switch (msgType) {
       case Handshake.MessageInitiationType:
-        this.handleInitiation(msg, rinfo)
+        this.#handleInitiation(msg, rinfo)
         break
       case Handshake.MessageResponseType:
-        this.handleResponse(msg, rinfo)
+        this.#handleResponse(msg, rinfo)
         break
       case Handshake.MessageCookieReplyType:
-        this.handleCookieReply(msg, rinfo)
+        this.#handleCookieReply(msg, rinfo)
         break
       case Handshake.MessageTransportType:
-        this.handleTransport(msg, rinfo)
+        this.#handleTransport(msg, rinfo)
         break
     }
   }
 
-  private handleInitiation(msg: Uint8Array, rinfo: RemoteInfo): void {
+  #handleInitiation(msg: Uint8Array, rinfo: NDgram.RemoteInfo): void {
     if (msg.length !== Handshake.MessageInitiationSize) return
 
     // Verify MAC1
-    if (!this.cookieChecker.checkMAC1(msg)) return
+    if (!this.#cookieChecker.checkMAC1(msg)) return
 
     const result = Handshake.consumeMessageInitiation(msg, this.publicKey, this.privateKey, (pk) =>
-      this.lookupPeerByPublicKey(pk),
+      this.#lookupPeerByPublicKey(pk),
     )
 
     if (!result) return
 
     const peer = result.peer
     // Find the actual Peer object
-    const peerObj = this.findPeerByHandshake(peer)
+    const peerObj = this.#findPeerByHandshake(peer)
     if (!peerObj) return
 
     // Update endpoint
@@ -257,26 +256,26 @@ export class Device extends EventEmitter {
       const response = Handshake.createMessageResponse(peer)
 
       // Register index
-      this.indexTable.set(peer.localIndex, { peer: peerObj, handshake: peer })
+      this.#indexTable.set(peer.localIndex, { peer: peerObj, handshake: peer })
 
       // Add MACs
-      const cookieGen = this.cookieGenerators.get(peerObj.publicKeyHex)
+      const cookieGen = this.#cookieGenerators.get(peerObj.publicKeyHex)
       if (cookieGen) cookieGen.addMacs(response)
 
-      this.sendToEndpoint(peerObj, response)
+      this.#sendToEndpoint(peerObj, response)
 
       // Derive session keys
       peerObj.activateKeypair()
 
       // Register keypair index
       if (peerObj.nextKeypair) {
-        this.indexTable.set(peerObj.nextKeypair.localIndex, {
+        this.#indexTable.set(peerObj.nextKeypair.localIndex, {
           peer: peerObj,
           keypair: peerObj.nextKeypair,
         })
       }
       if (peerObj.currentKeypair) {
-        this.indexTable.set(peerObj.currentKeypair.localIndex, {
+        this.#indexTable.set(peerObj.currentKeypair.localIndex, {
           peer: peerObj,
           keypair: peerObj.currentKeypair,
         })
@@ -286,16 +285,16 @@ export class Device extends EventEmitter {
     }
   }
 
-  private handleResponse(msg: Uint8Array, rinfo: RemoteInfo): void {
+  #handleResponse(msg: Uint8Array, rinfo: NDgram.RemoteInfo): void {
     if (msg.length !== Handshake.MessageResponseSize) return
 
     // Verify MAC1
-    if (!this.cookieChecker.checkMAC1(msg)) return
+    if (!this.#cookieChecker.checkMAC1(msg)) return
 
     const view = new DataView(msg.buffer, msg.byteOffset, msg.byteLength)
     const receiverIndex = view.getUint32(8, true)
 
-    const entry = this.indexTable.get(receiverIndex)
+    const entry = this.#indexTable.get(receiverIndex)
     if (!entry?.peer) return
 
     const peer = entry.peer
@@ -310,30 +309,30 @@ export class Device extends EventEmitter {
 
     // Register keypair indices
     if (peer.currentKeypair) {
-      this.indexTable.set(peer.currentKeypair.localIndex, { peer, keypair: peer.currentKeypair })
+      this.#indexTable.set(peer.currentKeypair.localIndex, { peer, keypair: peer.currentKeypair })
     }
     if (peer.previousKeypair) {
-      this.indexTable.set(peer.previousKeypair.localIndex, { peer, keypair: peer.previousKeypair })
+      this.#indexTable.set(peer.previousKeypair.localIndex, { peer, keypair: peer.previousKeypair })
     }
 
     // Send keepalive to confirm
-    this.sendKeepalive(peer)
+    this.#sendKeepalive(peer)
   }
 
-  private handleCookieReply(msg: Uint8Array, _rinfo: RemoteInfo): void {
+  #handleCookieReply(msg: Uint8Array, _rinfo: NDgram.RemoteInfo): void {
     if (msg.length !== Handshake.MessageCookieReplySize) return
 
     const view = new DataView(msg.buffer, msg.byteOffset, msg.byteLength)
     const receiverIndex = view.getUint32(4, true)
 
-    const entry = this.indexTable.get(receiverIndex)
+    const entry = this.#indexTable.get(receiverIndex)
     if (!entry?.peer) return
 
-    const cookieGen = this.cookieGenerators.get(entry.peer.publicKeyHex)
+    const cookieGen = this.#cookieGenerators.get(entry.peer.publicKeyHex)
     if (cookieGen) cookieGen.consumeReply(msg)
   }
 
-  private handleTransport(msg: Uint8Array, rinfo: RemoteInfo): void {
+  #handleTransport(msg: Uint8Array, rinfo: NDgram.RemoteInfo): void {
     if (msg.length < Handshake.MessageTransportHeaderSize + 16) return // header + poly1305 tag
 
     const view = new DataView(msg.buffer, msg.byteOffset, msg.byteLength)
@@ -343,7 +342,7 @@ export class Device extends EventEmitter {
     const counter = counterLow + counterHigh * 0x100000000
 
     // Lookup keypair
-    const entry = this.indexTable.get(receiverIndex)
+    const entry = this.#indexTable.get(receiverIndex)
     if (!entry?.peer) return
 
     const peer = entry.peer
@@ -401,26 +400,26 @@ export class Device extends EventEmitter {
     }
   }
 
-  private sendToEndpoint(peer: Peer, data: Uint8Array): void {
-    if (!peer.endpoint || !this.socket) return
+  #sendToEndpoint(peer: Peer, data: Uint8Array): void {
+    if (!peer.endpoint || !this.#socket) return
 
     const [host, portStr] = peer.endpoint.split(":")
     const port = parseInt(portStr!, 10)
     if (!host || isNaN(port)) return
 
-    this.socket.send(Buffer.from(data), port, host, (err) => {
+    this.#socket.send(Buffer.from(data), port, host, (err) => {
       if (err) this.emit("error", err)
     })
   }
 
-  private lookupPeerByPublicKey(pk: Uint8Array): Handshake.HandshakeContext | null {
+  #lookupPeerByPublicKey(pk: Uint8Array): Handshake.HandshakeContext | null {
     const hex = Buffer.from(pk).toString("hex")
-    const peer = this.peers.get(hex)
+    const peer = this.#peers.get(hex)
     return peer?.handshake ?? null
   }
 
-  private findPeerByHandshake(hs: Handshake.HandshakeContext): Peer | null {
-    for (const peer of this.peers.values()) {
+  #findPeerByHandshake(hs: Handshake.HandshakeContext): Peer | null {
+    for (const peer of this.#peers.values()) {
       if (peer.handshake === hs) return peer
     }
     return null

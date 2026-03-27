@@ -15,12 +15,12 @@ const BIT_MASK = BLOCK_BITS - 1 // 63
 // The ring blocks need full 64-bit bitwise, so we use BigInt[].
 
 export class ReplayFilter {
-  private last: number = 0
-  private ring: BigInt[] = new Array(RING_BLOCKS).fill(0n)
+  #last: number = 0
+  #ring: BigInt[] = new Array(RING_BLOCKS).fill(0n)
 
   reset(): void {
-    this.last = 0
-    this.ring.fill(0n)
+    this.#last = 0
+    this.#ring.fill(0n)
   }
 
   validateCounter(counter: number, limit: number): boolean {
@@ -28,16 +28,16 @@ export class ReplayFilter {
 
     const indexBlock = counter >>> BLOCK_BIT_LOG
 
-    if (counter > this.last) {
+    if (counter > this.#last) {
       // Move window forward
-      const current = this.last >>> BLOCK_BIT_LOG
+      const current = this.#last >>> BLOCK_BIT_LOG
       let diff = indexBlock - current
       if (diff > RING_BLOCKS) diff = RING_BLOCKS
       for (let i = current + 1; i <= current + diff; i++) {
-        this.ring[i & BLOCK_MASK] = 0n
+        this.#ring[i & BLOCK_MASK] = 0n
       }
-      this.last = counter
-    } else if (this.last - counter > WINDOW_SIZE) {
+      this.#last = counter
+    } else if (this.#last - counter > WINDOW_SIZE) {
       // Behind current window
       return false
     }
@@ -45,9 +45,9 @@ export class ReplayFilter {
     // Check and set bit
     const ib = indexBlock & BLOCK_MASK
     const indexBit = BigInt(counter & BIT_MASK)
-    const old = this.ring[ib] as bigint
+    const old = this.#ring[ib] as bigint
     const updated = old | (1n << indexBit)
-    this.ring[ib] = updated
+    this.#ring[ib] = updated
     return old !== updated
   }
 }

@@ -1,10 +1,10 @@
 import { test, expect } from "bun:test"
 import * as ChaCha20Poly1305 from "./ChaCha20Poly1305.ts"
-import { randomBytes } from "crypto"
+import * as NCrypto from "node:crypto"
 
 test("chacha20-poly1305 seal/open round-trip", () => {
-  const key = new Uint8Array(randomBytes(32))
-  const nonce = new Uint8Array(randomBytes(12))
+  const key = new Uint8Array(NCrypto.randomBytes(32))
+  const nonce = new Uint8Array(NCrypto.randomBytes(12))
   const plaintext = new TextEncoder().encode("Hello, WireGuard!")
 
   const ciphertext = ChaCha20Poly1305.seal(key, nonce, plaintext)
@@ -16,8 +16,8 @@ test("chacha20-poly1305 seal/open round-trip", () => {
 })
 
 test("chacha20-poly1305 with AAD", () => {
-  const key = new Uint8Array(randomBytes(32))
-  const nonce = new Uint8Array(randomBytes(12))
+  const key = new Uint8Array(NCrypto.randomBytes(32))
+  const nonce = new Uint8Array(NCrypto.randomBytes(12))
   const plaintext = new TextEncoder().encode("secret data")
   const aad = new TextEncoder().encode("additional data")
 
@@ -33,9 +33,9 @@ test("chacha20-poly1305 with AAD", () => {
 })
 
 test("chacha20-poly1305 empty plaintext (auth only)", () => {
-  const key = new Uint8Array(randomBytes(32))
+  const key = new Uint8Array(NCrypto.randomBytes(32))
   const nonce = new Uint8Array(12)
-  const aad = new Uint8Array(randomBytes(32))
+  const aad = new Uint8Array(NCrypto.randomBytes(32))
 
   const ciphertext = ChaCha20Poly1305.seal(key, nonce, new Uint8Array(0), aad)
   expect(ciphertext.length).toBe(16) // just the tag
@@ -46,8 +46,8 @@ test("chacha20-poly1305 empty plaintext (auth only)", () => {
 })
 
 test("chacha20-poly1305 tamper detection", () => {
-  const key = new Uint8Array(randomBytes(32))
-  const nonce = new Uint8Array(randomBytes(12))
+  const key = new Uint8Array(NCrypto.randomBytes(32))
+  const nonce = new Uint8Array(NCrypto.randomBytes(12))
   const plaintext = new TextEncoder().encode("sensitive")
 
   const ciphertext = ChaCha20Poly1305.seal(key, nonce, plaintext)
@@ -60,8 +60,8 @@ test("chacha20-poly1305 tamper detection", () => {
 })
 
 test("xchacha20-poly1305 seal/open round-trip", () => {
-  const key = new Uint8Array(randomBytes(32))
-  const nonce = new Uint8Array(randomBytes(24)) // 24-byte nonce
+  const key = new Uint8Array(NCrypto.randomBytes(32))
+  const nonce = new Uint8Array(NCrypto.randomBytes(24)) // 24-byte nonce
 
   const plaintext = new TextEncoder().encode("XChaCha20 test!")
   const ciphertext = ChaCha20Poly1305.xSeal(key, nonce, plaintext)
@@ -73,8 +73,8 @@ test("xchacha20-poly1305 seal/open round-trip", () => {
 })
 
 test("xchacha20-poly1305 with AAD", () => {
-  const key = new Uint8Array(randomBytes(32))
-  const nonce = new Uint8Array(randomBytes(24))
+  const key = new Uint8Array(NCrypto.randomBytes(32))
+  const nonce = new Uint8Array(NCrypto.randomBytes(24))
   const plaintext = new TextEncoder().encode("cookie data")
   const aad = new TextEncoder().encode("mac1 value")
 

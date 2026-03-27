@@ -2,7 +2,7 @@
  * WireGuard MAC1/MAC2 and cookie mechanism.
  * Direct port from wireguard-go/device/cookie.go.
  */
-import { randomBytes } from "crypto"
+import * as NCrypto from "node:crypto"
 import * as Blake2s from "../crypto/Blake2s.ts"
 import * as ChaCha20Poly1305 from "../crypto/ChaCha20Poly1305.ts"
 import * as Handshake from "./Handshake.ts"
@@ -17,23 +17,23 @@ function hmacEqual(a: Uint8Array, b: Uint8Array): boolean {
 }
 
 export class CookieChecker {
-  private mac1Key: Uint8Array
-  private mac2EncryptionKey: Uint8Array
-  private mac2Secret: Uint8Array = new Uint8Array(32)
-  private mac2SecretSet: number = 0
+  #mac1Key: Uint8Array
+  #mac2EncryptionKey: Uint8Array
+  #mac2Secret: Uint8Array = new Uint8Array(32)
+  #mac2SecretSet: number = 0
 
   constructor(publicKey: Uint8Array) {
     // mac1 key = BLAKE2s-256("mac1----" || pk)
     const mac1Hash = new Blake2s.Blake2s(32)
     mac1Hash.update(new TextEncoder().encode(Handshake.WGLabelMAC1))
     mac1Hash.update(publicKey)
-    this.mac1Key = mac1Hash.digest()
+    this.#mac1Key = mac1Hash.digest()
 
     // mac2 encryption key = BLAKE2s-256("cookie--" || pk)
     const mac2Hash = new Blake2s.Blake2s(32)
     mac2Hash.update(new TextEncoder().encode(Handshake.WGLabelCookie))
     mac2Hash.update(publicKey)
-    this.mac2EncryptionKey = mac2Hash.digest()
+    this.#mac2EncryptionKey = mac2Hash.digest()
   }
 
   checkMAC1(msg: Uint8Array): boolean {
@@ -41,14 +41,14 @@ export class CookieChecker {
     const smac2 = size - 16
     const smac1 = smac2 - 16
 
-    const mac1 = Blake2s.blake2s128(this.mac1Key, msg.subarray(0, smac1))
+    const mac1 = Blake2s.blake2s128(this.#mac1Key, msg.subarray(0, smac1))
     return hmacEqual(mac1, msg.subarray(smac1, smac2))
   }
 
   checkMAC2(msg: Uint8Array, src: Uint8Array): boolean {
-    if (Date.now() - this.mac2SecretSet > Handshake.CookieRefreshTime) return false
+    if (Date.now() - this.#mac2SecretSet > Handshake.CookieRefreshTime) return false
 
-    const cookie = Blake2s.blake2s128(this.mac2Secret, src)
+    const cookie = Blake2s.blake2s128(this.#mac2Secret, src)
     const smac2 = msg.length - 16
     const mac2 = Blake2s.blake2s128(cookie, msg.subarray(0, smac2))
     return hmacEqual(mac2, msg.subarray(smac2))
@@ -56,14 +56,14 @@ export class CookieChecker {
 
   createReply(msg: Uint8Array, receiverIndex: number, src: Uint8Array): Uint8Array {
     // Refresh secret if needed
-    if (Date.now() - this.mac2SecretSet > Handshake.CookieRefreshTime) {
-      const secret = randomBytes(32)
-      this.mac2Secret = new Uint8Array(secret)
-      this.mac2SecretSet = Date.now()
+    if (Date.now() - this.#mac2SecretSet > Handshake.CookieRefreshTime) {
+      const secret = NCrypto.randomBytes(32)
+      this.#mac2Secret = new Uint8Array(secret)
+      this.#mac2SecretSet = Date.now()
     }
 
     // Derive cookie
-    const cookie = Blake2s.blake2s128(this.mac2Secret, src)
+    const cookie = Blake2s.blake2s128(this.#mac2Secret, src)
 
     // Extract MAC1 from msg for AAD
     const size = msg.length
@@ -71,9 +71,9 @@ export class CookieChecker {
     const smac1 = smac2 - 16
 
     // Encrypt cookie
-    const nonce = new Uint8Array(randomBytes(24))
+    const nonce = new Uint8Array(NCrypto.randomBytes(24))
     const encryptedCookie = ChaCha20Poly1305.xSeal(
-      this.mac2EncryptionKey,
+      this.#mac2EncryptionKey,
       nonce,
       cookie,
       msg.subarray(smac1, smac2),
@@ -92,23 +92,23 @@ export class CookieChecker {
 }
 
 export class CookieGenerator {
-  private mac1Key: Uint8Array
-  private mac2EncryptionKey: Uint8Array
-  private cookie: Uint8Array = new Uint8Array(16)
-  private cookieSet: number = 0
-  private hasLastMAC1: boolean = false
-  private lastMAC1: Uint8Array = new Uint8Array(16)
+  #mac1Key: Uint8Array
+  #mac2EncryptionKey: Uint8Array
+  #cookie: Uint8Array = new Uint8Array(16)
+  #cookieSet: number = 0
+  #hasLastMAC1: boolean = false
+  #lastMAC1: Uint8Array = new Uint8Array(16)
 
   constructor(publicKey: Uint8Array) {
     const mac1Hash = new Blake2s.Blake2s(32)
     mac1Hash.update(new TextEncoder().encode(Handshake.WGLabelMAC1))
     mac1Hash.update(publicKey)
-    this.mac1Key = mac1Hash.digest()
+    this.#mac1Key = mac1Hash.digest()
 
     const mac2Hash = new Blake2s.Blake2s(32)
     mac2Hash.update(new TextEncoder().encode(Handshake.WGLabelCookie))
     mac2Hash.update(publicKey)
-    this.mac2EncryptionKey = mac2Hash.digest()
+    this.#mac2EncryptionKey = mac2Hash.digest()
   }
 
   addMacs(msg: Uint8Array): void {
@@ -116,16 +116,16 @@ export class CookieGenerator {
     const smac2 = size - 16
     const smac1 = smac2 - 16
 
-    const mac1 = Blake2s.blake2s128(this.mac1Key, msg.subarray(0, smac1))
+    const mac1 = Blake2s.blake2s128(this.#mac1Key, msg.subarray(0, smac1))
     msg.set(mac1, smac1)
-    this.lastMAC1 = new Uint8Array(mac1)
+    this.#lastMAC1 = new Uint8Array(mac1)
     this.hasLastMAC1 = true
 
-    if (Date.now() - this.cookieSet > Handshake.CookieRefreshTime) {
+    if (Date.now() - this.#cookieSet > Handshake.CookieRefreshTime) {
       return // Leave MAC2 as zeros
     }
 
-    const mac2 = Blake2s.blake2s128(this.cookie, msg.subarray(0, smac2))
+    const mac2 = Blake2s.blake2s128(this.#cookie, msg.subarray(0, smac2))
     msg.set(mac2, smac2)
   }
 
@@ -141,15 +141,15 @@ export class CookieGenerator {
     const encryptedCookie = msg.slice(32, 64)
 
     const cookie = ChaCha20Poly1305.xOpen(
-      this.mac2EncryptionKey,
+      this.#mac2EncryptionKey,
       nonce,
       encryptedCookie,
-      this.lastMAC1,
+      this.#lastMAC1,
     )
     if (!cookie) return false
 
-    this.cookie = cookie
-    this.cookieSet = Date.now()
+    this.#cookie = cookie
+    this.#cookieSet = Date.now()
     return true
   }
 }

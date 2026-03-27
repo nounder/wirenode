@@ -1,10 +1,10 @@
 export { Wireproxy } from "./Wireproxy.ts"
-export { Device } from "./device/Device.ts"
-export { Peer } from "./device/Peer.ts"
-export type { DeviceConfig } from "./device/Device.ts"
-export type { PeerConfig } from "./device/Peer.ts"
-export { parseConfig } from "./Config.ts"
-export type { Configuration, InterfaceConfig, RoutineConfig } from "./Config.ts"
+export { Device } from "./wireguard/Device.ts"
+export { Peer } from "./wireguard/Peer.ts"
+export type { DeviceConfig } from "./wireguard/Device.ts"
+export type { PeerConfig } from "./wireguard/Peer.ts"
+export { parseConfig } from "./wireguard/Config.ts"
+export type { Configuration, InterfaceConfig, RoutineConfig } from "./wireguard/Config.ts"
 export { VirtualTun } from "./net/VirtualTun.ts"
 
 if (import.meta.main) {
@@ -28,7 +28,7 @@ Options:
   const configPath = args.find((a) => !a.startsWith("-"))!
 
   const { Wireproxy } = await import("./Wireproxy.ts")
-  const { parseConfig } = await import("./Config.ts")
+  const { parseConfig } = await import("./wireguard/Config.ts")
 
   const configText = await Bun.file(configPath).text()
 

@@ -1,11 +1,11 @@
 /**
  * WireGuard client with SOCKS5/HTTP proxy support.
  */
-import { parseConfig } from "./Config.ts"
-import type { Configuration } from "./Config.ts"
-import { Device } from "./device/Device.ts"
+import { parseConfig } from "./wireguard/Config.ts"
+import type { Configuration } from "./wireguard/Config.ts"
+import { Device } from "./wireguard/Device.ts"
 import { VirtualTun } from "./net/VirtualTun.ts"
-import type { StreamPair } from "./net/bridge.ts"
+import type { StreamPair } from "./net/Bridge.ts"
 import * as Socks5 from "./proxy/Socks5.ts"
 import * as Http from "./proxy/Http.ts"
 import * as TcpTunnel from "./proxy/TcpTunnel.ts"
@@ -17,19 +17,19 @@ export interface WireproxyOptions {
 }
 
 export class Wireproxy {
-  private device: Device | null = null
-  private vt: VirtualTun | null = null
-  private config: Configuration
+  #device: Device | null = null
+  #vt: VirtualTun | null = null
+  #config: Configuration
 
   constructor(configText: string) {
-    this.config = parseConfig(configText)
+    this.#config = parseConfig(configText)
   }
 
   async start(): Promise<void> {
-    const conf = this.config
+    const conf = this.#config
 
     // Create WireGuard device
-    this.device = new Device({
+    this.#device = new Device({
       privateKey: conf.interface.privateKey,
       listenPort: conf.interface.listenPort,
       peers: conf.peers,
@@ -37,34 +37,34 @@ export class Wireproxy {
     })
 
     // Start device
-    await this.device.up()
-    console.log(`WireGuard device up on port ${this.device.getPort()}`)
+    await this.#device.up()
+    console.log(`WireGuard device up on port ${this.#device.getPort()}`)
 
     // Create virtual tun
-    this.vt = new VirtualTun({
-      device: this.device,
+    this.#vt = new VirtualTun({
+      device: this.#device,
       addresses: conf.interface.address,
       dns: conf.interface.dns,
       resolveConfig: conf.resolve,
     })
 
     // Initiate handshakes with all peers that have endpoints
-    for (const peer of this.device.getPeers()) {
+    for (const peer of this.#device.getPeers()) {
       if (peer.endpoint) {
-        this.device.initiateHandshake(peer)
+        this.#device.initiateHandshake(peer)
       }
     }
 
-    this.device.on("handshakeComplete", (peer) => {
+    this.#device.on("handshakeComplete", (peer) => {
       console.log(`Handshake complete with peer ${peer.publicKeyHex.slice(0, 16)}...`)
     })
 
-    this.device.on("error", (err) => {
+    this.#device.on("error", (err) => {
       console.error(`WireGuard error: ${err.message}`)
     })
 
     const dial = async (host: string, port: number): Promise<StreamPair> => {
-      return this.vt!.dial(host, port)
+      return this.#vt!.dial(host, port)
     }
 
     // Start all configured routines
@@ -85,7 +85,7 @@ export class Wireproxy {
 
         case "http":
           promises.push(
-            Http.startHTTPProxy({
+            Http.startHttpProxy({
               bindAddress: routine.bindAddress,
               username: routine.username || undefined,
               password: routine.password || undefined,
@@ -98,7 +98,7 @@ export class Wireproxy {
 
         case "tcpClient":
           promises.push(
-            TcpTunnel.startTCPClientTunnel({
+            TcpTunnel.startTcpClientTunnel({
               bindAddress: routine.bindAddress,
               target: routine.target,
               dial,
@@ -108,11 +108,11 @@ export class Wireproxy {
 
         case "udp":
           promises.push(
-            UdpProxy.startUDPProxy({
+            UdpProxy.startUdpProxy({
               bindAddress: routine.bindAddress,
               target: routine.target,
               inactivityTimeout: routine.inactivityTimeout,
-              dial: (target) => this.vt!.dialUDP(target),
+              dial: (target) => this.#vt!.dialUDP(target),
             }),
           )
           break
@@ -135,18 +135,18 @@ export class Wireproxy {
   }
 
   async stop(): Promise<void> {
-    if (this.device) {
-      await this.device.down()
-      this.device = null
+    if (this.#device) {
+      await this.#device.down()
+      this.#device = null
     }
-    this.vt = null
+    this.#vt = null
   }
 
   getDevice(): Device | null {
-    return this.device
+    return this.#device
   }
 
   getVirtualTun(): VirtualTun | null {
-    return this.vt
+    return this.#vt
   }
 }

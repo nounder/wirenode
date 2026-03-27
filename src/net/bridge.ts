@@ -2,7 +2,7 @@
  * Bridge between a Node Socket and a Web Streams
  */
 
-import type { Socket } from "net"
+import type * as NNet from "node:net"
 
 export interface StreamPair {
   readable: ReadableStream<Uint8Array>
@@ -14,7 +14,7 @@ export interface StreamPair {
  * Pipe data bidirectionally between a Node Socket and a web stream pair.
  * Handles cleanup when either side closes or errors.
  */
-export function bridge(socket: Socket, remote: StreamPair): void {
+export function bridge(socket: NNet.Socket, remote: StreamPair): void {
   let closed = false
 
   const cleanup = () => {

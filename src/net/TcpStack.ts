@@ -4,9 +4,9 @@
  * Handles: IPv4 header construction/parsing, TCP 3-way handshake,
  * data transfer with sliding window, retransmission, and connection teardown.
  */
-import { randomBytes } from "crypto"
-import type { Device } from "../device/Device.ts"
-import type { Peer } from "../device/Peer.ts"
+import * as NCrypto from "node:crypto"
+import type { Device } from "../wireguard/Device.ts"
+import type { Peer } from "../wireguard/Peer.ts"
 
 // ─── IP Protocol ────────────────────────────────────────────────────────────
 
@@ -183,16 +183,17 @@ function parseTCPSegment(data: Uint8Array): TCPHeader | null {
 
 // ─── TCP Connection ─────────────────────────────────────────────────────────
 
-const enum TcpState {
-  CLOSED,
-  SYN_SENT,
-  ESTABLISHED,
-  FIN_WAIT_1,
-  FIN_WAIT_2,
-  TIME_WAIT,
-  CLOSE_WAIT,
-  LAST_ACK,
-}
+const TcpState = {
+  CLOSED: 0,
+  SYN_SENT: 1,
+  ESTABLISHED: 2,
+  FIN_WAIT_1: 3,
+  FIN_WAIT_2: 4,
+  TIME_WAIT: 5,
+  CLOSE_WAIT: 6,
+  LAST_ACK: 7,
+} as const
+type TcpState = typeof TcpState[keyof typeof TcpState]
 
 const RETRANSMIT_MS = 1000
 const MAX_RETRANSMITS = 8
@@ -209,33 +210,33 @@ interface UnackedSegment {
 }
 
 export class TcpConnection {
-  private state = TcpState.CLOSED
-  private localPort: number
-  private remotePort: number
-  private localIP: Uint8Array
-  private remoteIP: Uint8Array
-  private peer: Peer
-  private device: Device
-  private ipId = 1
+  #state: TcpState = TcpState.CLOSED
+  #localPort: number
+  #remotePort: number
+  #localIP: Uint8Array
+  #remoteIP: Uint8Array
+  #peer: Peer
+  #device: Device
+  #ipId = 1
 
-  private sendSeq: number // next sequence number to send
-  private recvSeq: number = 0
+  #sendSeq: number // next sequence number to send
+  #recvSeq: number = 0
 
-  private unacked: UnackedSegment[] = []
-  private retransmitTimer: ReturnType<typeof setInterval> | null = null
-  private timeWaitTimer: ReturnType<typeof setTimeout> | null = null
+  #unacked: UnackedSegment[] = []
+  #retransmitTimer: ReturnType<typeof setInterval> | null = null
+  #timeWaitTimer: ReturnType<typeof setTimeout> | null = null
 
-  private destroyed = false
+  #destroyed = false
 
   // Web streams
   readonly readable: ReadableStream<Uint8Array>
   readonly writable: WritableStream<Uint8Array>
-  private readableController: ReadableStreamDefaultController<Uint8Array> | null = null
+  #readableController: ReadableStreamDefaultController<Uint8Array> | null = null
 
   // Events (minimal, just connect/error/close for lifecycle)
-  private connectResolve: (() => void) | null = null
-  private connectReject: ((err: Error) => void) | null = null
-  private onClose: (() => void) | null = null
+  #connectResolve: (() => void) | null = null
+  #connectReject: ((err: Error) => void) | null = null
+  #onClose: (() => void) | null = null
 
   constructor(
     localIP: Uint8Array,
@@ -245,21 +246,21 @@ export class TcpConnection {
     peer: Peer,
     device: Device,
   ) {
-    this.localIP = localIP
-    this.remoteIP = remoteIP
-    this.localPort = localPort
-    this.remotePort = remotePort
-    this.peer = peer
-    this.device = device
+    this.#localIP = localIP
+    this.#remoteIP = remoteIP
+    this.#localPort = localPort
+    this.#remotePort = remotePort
+    this.#peer = peer
+    this.#device = device
 
     // Initial sequence number
-    const rnd = randomBytes(4)
-    this.sendSeq = new DataView(rnd.buffer).getUint32(0, false)
+    const rnd = NCrypto.randomBytes(4)
+    this.#sendSeq = new DataView(rnd.buffer).getUint32(0, false)
 
     // Create ReadableStream
     this.readable = new ReadableStream<Uint8Array>({
       start: (controller) => {
-        this.readableController = controller
+        this.#readableController = controller
       },
       cancel: () => {
         this.close()
@@ -269,12 +270,12 @@ export class TcpConnection {
     // Create WritableStream
     this.writable = new WritableStream<Uint8Array>({
       write: (chunk) => {
-        this.writeData(chunk)
+        this.#writeData(chunk)
       },
       close: () => {
-        if (this.state === TcpState.ESTABLISHED) {
-          this.sendFIN()
-          this.state = TcpState.FIN_WAIT_1
+        if (this.#state === TcpState.ESTABLISHED) {
+          this.#sendFIN()
+          this.#state = TcpState.FIN_WAIT_1
         }
       },
       abort: () => {
@@ -286,50 +287,50 @@ export class TcpConnection {
   /** Returns a promise that resolves when TCP handshake completes */
   connected(): Promise<void> {
     return new Promise<void>((resolve, reject) => {
-      this.connectResolve = resolve
-      this.connectReject = reject
+      this.#connectResolve = resolve
+      this.#connectReject = reject
     })
   }
 
   /** Register a callback for when the connection is fully closed */
   onClosed(cb: () => void): void {
-    this.onClose = cb
+    this.#onClose = cb
   }
 
   /** Initiate TCP handshake (SYN) */
   connect_(): void {
-    this.state = TcpState.SYN_SENT
-    this.sendTCP(TCP_SYN, new Uint8Array(0))
-    this.sendSeq = (this.sendSeq + 1) >>> 0 // SYN consumes one sequence number
-    this.startRetransmitTimer()
+    this.#state = TcpState.SYN_SENT
+    this.#sendTCP(TCP_SYN, new Uint8Array(0))
+    this.#sendSeq = (this.#sendSeq + 1) >>> 0 // SYN consumes one sequence number
+    this.#startRetransmitTimer()
   }
 
   /** Called by TcpStack when an IP packet arrives for this connection */
   handlePacket(tcpHeader: TCPHeader): void {
-    if (this.destroyed) return
+    if (this.#destroyed) return
 
-    switch (this.state) {
+    switch (this.#state) {
       case TcpState.SYN_SENT:
-        this.handleSynSent(tcpHeader)
+        this.#handleSynSent(tcpHeader)
         break
       case TcpState.ESTABLISHED:
-        this.handleEstablished(tcpHeader)
+        this.#handleEstablished(tcpHeader)
         break
       case TcpState.FIN_WAIT_1:
-        this.handleFinWait1(tcpHeader)
+        this.#handleFinWait1(tcpHeader)
         break
       case TcpState.FIN_WAIT_2:
-        this.handleFinWait2(tcpHeader)
+        this.#handleFinWait2(tcpHeader)
         break
       case TcpState.CLOSE_WAIT:
-        this.handleCloseWait(tcpHeader)
+        this.#handleCloseWait(tcpHeader)
         break
       case TcpState.LAST_ACK:
-        this.handleLastAck(tcpHeader)
+        this.#handleLastAck(tcpHeader)
         break
       case TcpState.TIME_WAIT:
         if (tcpHeader.flags & TCP_FIN) {
-          this.sendACK()
+          this.#sendACK()
         }
         break
     }
@@ -337,170 +338,170 @@ export class TcpConnection {
 
   /** Forcefully close the connection */
   close(): void {
-    if (this.destroyed) return
-    this.destroyed = true
-    if (this.state === TcpState.ESTABLISHED || this.state === TcpState.CLOSE_WAIT) {
-      this.sendRST()
+    if (this.#destroyed) return
+    this.#destroyed = true
+    if (this.#state === TcpState.ESTABLISHED || this.#state === TcpState.CLOSE_WAIT) {
+      this.#sendRST()
     }
-    this.cleanup()
+    this.#cleanup()
   }
 
-  private handleSynSent(tcp: TCPHeader): void {
+  #handleSynSent(tcp: TCPHeader): void {
     if (tcp.flags & TCP_RST) {
-      this.emitError("connection refused")
+      this.#emitError("connection refused")
       return
     }
 
     if ((tcp.flags & (TCP_SYN | TCP_ACK)) === (TCP_SYN | TCP_ACK)) {
-      this.recvSeq = (tcp.seqNum + 1) >>> 0
-      this.ackReceived(tcp.ackNum)
-      this.state = TcpState.ESTABLISHED
-      this.sendACK()
-      this.connectResolve?.()
-      this.connectResolve = null
-      this.connectReject = null
+      this.#recvSeq = (tcp.seqNum + 1) >>> 0
+      this.#ackReceived(tcp.ackNum)
+      this.#state = TcpState.ESTABLISHED
+      this.#sendACK()
+      this.#connectResolve?.()
+      this.#connectResolve = null
+      this.#connectReject = null
     }
   }
 
-  private handleEstablished(tcp: TCPHeader): void {
+  #handleEstablished(tcp: TCPHeader): void {
     if (tcp.flags & TCP_RST) {
-      this.emitError("connection reset")
+      this.#emitError("connection reset")
       return
     }
 
     if (tcp.flags & TCP_ACK) {
-      this.ackReceived(tcp.ackNum)
+      this.#ackReceived(tcp.ackNum)
     }
 
     // Process incoming data
     if (tcp.payload.length > 0) {
-      if (tcp.seqNum === this.recvSeq) {
-        this.recvSeq = (this.recvSeq + tcp.payload.length) >>> 0
-        this.readableController?.enqueue(new Uint8Array(tcp.payload))
-        this.sendACK()
-      } else if (seqAfter(tcp.seqNum, this.recvSeq)) {
-        this.sendACK()
+      if (tcp.seqNum === this.#recvSeq) {
+        this.#recvSeq = (this.#recvSeq + tcp.payload.length) >>> 0
+        this.#readableController?.enqueue(new Uint8Array(tcp.payload))
+        this.#sendACK()
+      } else if (seqAfter(tcp.seqNum, this.#recvSeq)) {
+        this.#sendACK()
       }
     }
 
     // Process FIN
     if (tcp.flags & TCP_FIN) {
-      this.recvSeq = (this.recvSeq + 1) >>> 0
-      this.sendACK()
-      try { this.readableController?.close() } catch { }
-      this.readableController = null
-      this.state = TcpState.CLOSE_WAIT
+      this.#recvSeq = (this.#recvSeq + 1) >>> 0
+      this.#sendACK()
+      try { this.#readableController?.close() } catch { }
+      this.#readableController = null
+      this.#state = TcpState.CLOSE_WAIT
       // Immediately send our FIN
-      this.sendFIN()
-      this.state = TcpState.LAST_ACK
+      this.#sendFIN()
+      this.#state = TcpState.LAST_ACK
     }
   }
 
-  private handleFinWait1(tcp: TCPHeader): void {
+  #handleFinWait1(tcp: TCPHeader): void {
     if (tcp.flags & TCP_RST) {
-      this.cleanup()
+      this.#cleanup()
       return
     }
 
     if (tcp.flags & TCP_ACK) {
-      this.ackReceived(tcp.ackNum)
+      this.#ackReceived(tcp.ackNum)
     }
 
-    if (tcp.payload.length > 0 && tcp.seqNum === this.recvSeq) {
-      this.recvSeq = (this.recvSeq + tcp.payload.length) >>> 0
-      this.readableController?.enqueue(new Uint8Array(tcp.payload))
+    if (tcp.payload.length > 0 && tcp.seqNum === this.#recvSeq) {
+      this.#recvSeq = (this.#recvSeq + tcp.payload.length) >>> 0
+      this.#readableController?.enqueue(new Uint8Array(tcp.payload))
     }
 
     if (tcp.flags & TCP_FIN) {
-      this.recvSeq = (this.recvSeq + 1) >>> 0
-      this.sendACK()
+      this.#recvSeq = (this.#recvSeq + 1) >>> 0
+      this.#sendACK()
 
-      if (this.unacked.length === 0) {
-        this.enterTimeWait()
+      if (this.#unacked.length === 0) {
+        this.#enterTimeWait()
       } else {
-        this.state = TcpState.TIME_WAIT
-        this.enterTimeWait()
+        this.#state = TcpState.TIME_WAIT
+        this.#enterTimeWait()
       }
-      try { this.readableController?.close() } catch { }
-      this.readableController = null
-    } else if (this.unacked.length === 0) {
-      this.state = TcpState.FIN_WAIT_2
+      try { this.#readableController?.close() } catch { }
+      this.#readableController = null
+    } else if (this.#unacked.length === 0) {
+      this.#state = TcpState.FIN_WAIT_2
     }
   }
 
-  private handleFinWait2(tcp: TCPHeader): void {
+  #handleFinWait2(tcp: TCPHeader): void {
     if (tcp.flags & TCP_RST) {
-      this.cleanup()
+      this.#cleanup()
       return
     }
 
-    if (tcp.payload.length > 0 && tcp.seqNum === this.recvSeq) {
-      this.recvSeq = (this.recvSeq + tcp.payload.length) >>> 0
-      this.readableController?.enqueue(new Uint8Array(tcp.payload))
-      this.sendACK()
+    if (tcp.payload.length > 0 && tcp.seqNum === this.#recvSeq) {
+      this.#recvSeq = (this.#recvSeq + tcp.payload.length) >>> 0
+      this.#readableController?.enqueue(new Uint8Array(tcp.payload))
+      this.#sendACK()
     }
 
     if (tcp.flags & TCP_FIN) {
-      this.recvSeq = (this.recvSeq + 1) >>> 0
-      this.sendACK()
-      try { this.readableController?.close() } catch { }
-      this.readableController = null
-      this.enterTimeWait()
+      this.#recvSeq = (this.#recvSeq + 1) >>> 0
+      this.#sendACK()
+      try { this.#readableController?.close() } catch { }
+      this.#readableController = null
+      this.#enterTimeWait()
     }
   }
 
-  private handleCloseWait(tcp: TCPHeader): void {
+  #handleCloseWait(tcp: TCPHeader): void {
     if (tcp.flags & TCP_ACK) {
-      this.ackReceived(tcp.ackNum)
+      this.#ackReceived(tcp.ackNum)
     }
   }
 
-  private handleLastAck(tcp: TCPHeader): void {
+  #handleLastAck(tcp: TCPHeader): void {
     if (tcp.flags & TCP_ACK) {
-      this.ackReceived(tcp.ackNum)
-      if (this.unacked.length === 0) {
-        this.cleanup()
+      this.#ackReceived(tcp.ackNum)
+      if (this.#unacked.length === 0) {
+        this.#cleanup()
       }
     }
   }
 
   // ─── Writing ──────────────────────────────────────────────────────────────
 
-  private writeData(chunk: Uint8Array): void {
-    if (this.state !== TcpState.ESTABLISHED || this.destroyed) return
+  #writeData(chunk: Uint8Array): void {
+    if (this.#state !== TcpState.ESTABLISHED || this.#destroyed) return
 
     let offset = 0
     while (offset < chunk.length) {
       const end = Math.min(offset + MSS, chunk.length)
       const data = chunk.subarray(offset, end)
-      this.sendTCP(TCP_ACK | TCP_PSH, data)
-      this.sendSeq = (this.sendSeq + data.length) >>> 0
+      this.#sendTCP(TCP_ACK | TCP_PSH, data)
+      this.#sendSeq = (this.#sendSeq + data.length) >>> 0
       offset = end
     }
   }
 
   // ─── Sending helpers ────────────────────────────────────────────────────
 
-  private sendTCP(flags: number, payload: Uint8Array): void {
+  #sendTCP(flags: number, payload: Uint8Array): void {
     const segment = buildTCPSegment(
-      this.localPort,
-      this.remotePort,
-      this.sendSeq,
-      this.recvSeq,
+      this.#localPort,
+      this.#remotePort,
+      this.#sendSeq,
+      this.#recvSeq,
       flags,
       RECV_WINDOW,
       payload,
-      this.localIP,
-      this.remoteIP,
+      this.#localIP,
+      this.#remoteIP,
     )
 
-    const ipPacket = buildIPv4Header(this.localIP, this.remoteIP, IP_PROTO_TCP, segment, this.ipId++)
-    if (this.ipId > 0xffff) this.ipId = 1
+    const ipPacket = buildIPv4Header(this.#localIP, this.#remoteIP, IP_PROTO_TCP, segment, this.#ipId++)
+    if (this.#ipId > 0xffff) this.#ipId = 1
 
     const seqLen = payload.length + ((flags & TCP_SYN) ? 1 : 0) + ((flags & TCP_FIN) ? 1 : 0)
     if (seqLen > 0) {
-      this.unacked.push({
-        seqNum: this.sendSeq,
+      this.#unacked.push({
+        seqNum: this.#sendSeq,
         data: ipPacket,
         sentAt: Date.now(),
         retransmits: 0,
@@ -508,125 +509,125 @@ export class TcpConnection {
       })
     }
 
-    this.device.sendPacket(this.peer, ipPacket)
+    this.#device.sendPacket(this.#peer, ipPacket)
   }
 
-  private sendACK(): void {
+  #sendACK(): void {
     const segment = buildTCPSegment(
-      this.localPort,
-      this.remotePort,
-      this.sendSeq,
-      this.recvSeq,
+      this.#localPort,
+      this.#remotePort,
+      this.#sendSeq,
+      this.#recvSeq,
       TCP_ACK,
       RECV_WINDOW,
       new Uint8Array(0),
-      this.localIP,
-      this.remoteIP,
+      this.#localIP,
+      this.#remoteIP,
     )
 
-    const ipPacket = buildIPv4Header(this.localIP, this.remoteIP, IP_PROTO_TCP, segment, this.ipId++)
-    if (this.ipId > 0xffff) this.ipId = 1
-    this.device.sendPacket(this.peer, ipPacket)
+    const ipPacket = buildIPv4Header(this.#localIP, this.#remoteIP, IP_PROTO_TCP, segment, this.#ipId++)
+    if (this.#ipId > 0xffff) this.#ipId = 1
+    this.#device.sendPacket(this.#peer, ipPacket)
   }
 
-  private sendFIN(): void {
-    this.sendTCP(TCP_ACK | TCP_FIN, new Uint8Array(0))
-    this.sendSeq = (this.sendSeq + 1) >>> 0
+  #sendFIN(): void {
+    this.#sendTCP(TCP_ACK | TCP_FIN, new Uint8Array(0))
+    this.#sendSeq = (this.#sendSeq + 1) >>> 0
   }
 
-  private sendRST(): void {
+  #sendRST(): void {
     const segment = buildTCPSegment(
-      this.localPort,
-      this.remotePort,
-      this.sendSeq,
-      this.recvSeq,
+      this.#localPort,
+      this.#remotePort,
+      this.#sendSeq,
+      this.#recvSeq,
       TCP_RST | TCP_ACK,
       0,
       new Uint8Array(0),
-      this.localIP,
-      this.remoteIP,
+      this.#localIP,
+      this.#remoteIP,
     )
 
-    const ipPacket = buildIPv4Header(this.localIP, this.remoteIP, IP_PROTO_TCP, segment, this.ipId++)
-    this.device.sendPacket(this.peer, ipPacket)
+    const ipPacket = buildIPv4Header(this.#localIP, this.#remoteIP, IP_PROTO_TCP, segment, this.#ipId++)
+    this.#device.sendPacket(this.#peer, ipPacket)
   }
 
   // ─── Retransmission ─────────────────────────────────────────────────────
 
-  private startRetransmitTimer(): void {
-    if (this.retransmitTimer) return
-    this.retransmitTimer = setInterval(() => this.retransmit(), RETRANSMIT_MS)
+  #startRetransmitTimer(): void {
+    if (this.#retransmitTimer) return
+    this.#retransmitTimer = setInterval(() => this.#retransmit(), RETRANSMIT_MS)
   }
 
-  private retransmit(): void {
+  #retransmit(): void {
     const now = Date.now()
-    for (let i = this.unacked.length - 1; i >= 0; i--) {
-      const seg = this.unacked[i]!
+    for (let i = this.#unacked.length - 1; i >= 0; i--) {
+      const seg = this.#unacked[i]!
       if (now - seg.sentAt >= RETRANSMIT_MS) {
         if (seg.retransmits >= MAX_RETRANSMITS) {
-          this.emitError("connection timed out")
+          this.#emitError("connection timed out")
           return
         }
         seg.retransmits++
         seg.sentAt = now
-        this.device.sendPacket(this.peer, seg.data)
+        this.#device.sendPacket(this.#peer, seg.data)
       }
     }
   }
 
-  private ackReceived(ackNum: number): void {
-    this.unacked = this.unacked.filter((seg) => {
+  #ackReceived(ackNum: number): void {
+    this.#unacked = this.#unacked.filter((seg) => {
       const segEnd = (seg.seqNum + seg.length) >>> 0
       return seqAfter(segEnd, ackNum)
     })
 
-    if (this.unacked.length === 0 && this.retransmitTimer) {
-      clearInterval(this.retransmitTimer)
-      this.retransmitTimer = null
-    } else if (this.unacked.length > 0 && !this.retransmitTimer) {
-      this.startRetransmitTimer()
+    if (this.#unacked.length === 0 && this.#retransmitTimer) {
+      clearInterval(this.#retransmitTimer)
+      this.#retransmitTimer = null
+    } else if (this.#unacked.length > 0 && !this.#retransmitTimer) {
+      this.#startRetransmitTimer()
     }
   }
 
   // ─── Cleanup ────────────────────────────────────────────────────────────
 
-  private enterTimeWait(): void {
-    this.state = TcpState.TIME_WAIT
-    this.timeWaitTimer = setTimeout(() => {
-      this.cleanup()
+  #enterTimeWait(): void {
+    this.#state = TcpState.TIME_WAIT
+    this.#timeWaitTimer = setTimeout(() => {
+      this.#cleanup()
     }, TIME_WAIT_MS)
   }
 
-  private cleanup(): void {
-    this.state = TcpState.CLOSED
-    if (this.retransmitTimer) {
-      clearInterval(this.retransmitTimer)
-      this.retransmitTimer = null
+  #cleanup(): void {
+    this.#state = TcpState.CLOSED
+    if (this.#retransmitTimer) {
+      clearInterval(this.#retransmitTimer)
+      this.#retransmitTimer = null
     }
-    if (this.timeWaitTimer) {
-      clearTimeout(this.timeWaitTimer)
-      this.timeWaitTimer = null
+    if (this.#timeWaitTimer) {
+      clearTimeout(this.#timeWaitTimer)
+      this.#timeWaitTimer = null
     }
-    this.unacked = []
-    try { this.readableController?.close() } catch { }
-    this.readableController = null
-    this.onClose?.()
+    this.#unacked = []
+    try { this.#readableController?.close() } catch { }
+    this.#readableController = null
+    this.#onClose?.()
   }
 
-  private emitError(msg: string): void {
-    this.state = TcpState.CLOSED
+  #emitError(msg: string): void {
+    this.#state = TcpState.CLOSED
     const err = new Error(msg)
-    this.connectReject?.(err)
-    this.connectResolve = null
-    this.connectReject = null
-    try { this.readableController?.error(err) } catch { }
-    this.readableController = null
-    this.cleanup()
+    this.#connectReject?.(err)
+    this.#connectResolve = null
+    this.#connectReject = null
+    try { this.#readableController?.error(err) } catch { }
+    this.#readableController = null
+    this.#cleanup()
   }
 
   /** Connection key for lookup */
   get key(): string {
-    return connectionKey(this.localPort, this.remotePort, this.remoteIP)
+    return connectionKey(this.#localPort, this.#remotePort, this.#remoteIP)
   }
 }
 
@@ -646,8 +647,8 @@ function parseIPAddress(ip: string): Uint8Array {
   return new Uint8Array(parts)
 }
 
-/** Ephemeral port allocator */
-let nextEphemeralPort = 49152
+/** Ephemeral port allocator — randomize start to avoid collisions across runs */
+let nextEphemeralPort = 49152 + Math.floor(Math.random() * 8192)
 
 function allocatePort(): number {
   const port = nextEphemeralPort++
@@ -656,17 +657,17 @@ function allocatePort(): number {
 }
 
 export class TcpStack {
-  private device: Device
-  private connections: Map<string, TcpConnection> = new Map()
-  private localIP: Uint8Array
+  #device: Device
+  #connections: Map<string, TcpConnection> = new Map()
+  #localIP: Uint8Array
 
   constructor(device: Device, localIP: string) {
-    this.device = device
-    this.localIP = parseIPAddress(localIP)
+    this.#device = device
+    this.#localIP = parseIPAddress(localIP)
 
     // Listen for incoming IP packets from the WireGuard tunnel
-    this.device.on("packet", (data: Uint8Array, _peer: Peer) => {
-      this.handleIPPacket(data)
+    this.#device.on("packet", (data: Uint8Array, _peer: Peer) => {
+      this.#handleIPPacket(data)
     })
   }
 
@@ -675,20 +676,20 @@ export class TcpStack {
     const remoteIP = parseIPAddress(host)
     const localPort = allocatePort()
 
-    const conn = new TcpConnection(this.localIP, remoteIP, localPort, port, peer, this.device)
+    const conn = new TcpConnection(this.#localIP, remoteIP, localPort, port, peer, this.#device)
 
     const key = connectionKey(localPort, port, remoteIP)
-    this.connections.set(key, conn)
+    this.#connections.set(key, conn)
 
     conn.onClosed(() => {
-      this.connections.delete(key)
+      this.#connections.delete(key)
     })
 
     conn.connect_()
     return conn
   }
 
-  private handleIPPacket(packet: Uint8Array): void {
+  #handleIPPacket(packet: Uint8Array): void {
     const ip = parseIPv4(packet)
     if (!ip) return
     if (ip.protocol !== IP_PROTO_TCP) return
@@ -697,10 +698,10 @@ export class TcpStack {
     if (!tcp) return
 
     const key = connectionKey(tcp.dstPort, tcp.srcPort, ip.src)
-    const conn = this.connections.get(key)
+    const conn = this.#connections.get(key)
     if (!conn) {
       if (!(tcp.flags & TCP_RST)) {
-        this.sendRST(ip, tcp)
+        this.#sendRST(ip, tcp)
       }
       return
     }
@@ -708,7 +709,7 @@ export class TcpStack {
     conn.handlePacket(tcp)
   }
 
-  private sendRST(ip: { src: Uint8Array; dst: Uint8Array }, tcp: TCPHeader): void {
+  #sendRST(ip: { src: Uint8Array; dst: Uint8Array }, tcp: TCPHeader): void {
     const ackNum = (tcp.flags & TCP_ACK) ? 0 : (tcp.seqNum + tcp.payload.length + ((tcp.flags & TCP_SYN) ? 1 : 0) + ((tcp.flags & TCP_FIN) ? 1 : 0)) >>> 0
     const seqNum = (tcp.flags & TCP_ACK) ? tcp.ackNum : 0
     const flags = TCP_RST | ((tcp.flags & TCP_ACK) ? 0 : TCP_ACK)
@@ -726,17 +727,17 @@ export class TcpStack {
     )
 
     const ipPacket = buildIPv4Header(ip.dst, ip.src, IP_PROTO_TCP, segment, 0)
-    const peers = this.device.getPeers()
+    const peers = this.#device.getPeers()
     if (peers[0]) {
-      this.device.sendPacket(peers[0], ipPacket)
+      this.#device.sendPacket(peers[0], ipPacket)
     }
   }
 
   destroy(): void {
-    for (const conn of this.connections.values()) {
+    for (const conn of this.#connections.values()) {
       conn.close()
     }
-    this.connections.clear()
+    this.#connections.clear()
   }
 }
 

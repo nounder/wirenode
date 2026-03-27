@@ -3,12 +3,12 @@
  */
 
 import { x25519 } from "@noble/curves/ed25519.js"
-import { randomBytes } from "crypto"
+import * as NCrypto from "node:crypto"
 
 const KEY_SIZE = 32
 
 export function generatePrivateKey(): Uint8Array {
-  const sk = new Uint8Array(randomBytes(KEY_SIZE))
+  const sk = new Uint8Array(NCrypto.randomBytes(KEY_SIZE))
   clampPrivateKey(sk)
   return sk
 }

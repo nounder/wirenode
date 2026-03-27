@@ -3,10 +3,10 @@
  * Pure JS, no external dependencies.
  */
 
-import { createServer, Socket } from "net"
-import { timingSafeEqual } from "crypto"
-import type { StreamPair } from "../net/bridge.ts"
-import { bridge } from "../net/bridge.ts"
+import * as NNet from "node:net"
+import * as NCrypto from "node:crypto"
+import type { StreamPair } from "../net/Bridge.ts"
+import { bridge } from "../net/Bridge.ts"
 
 export interface Socks5Options {
   bindAddress: string
@@ -28,7 +28,7 @@ const REP_HOST_UNREACHABLE = 0x04
 const REP_COMMAND_NOT_SUPPORTED = 0x07
 const REP_ADDR_TYPE_NOT_SUPPORTED = 0x08
 
-function readExact(socket: Socket, n: number): Promise<Buffer> {
+function readExact(socket: NNet.Socket, n: number): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = []
     let received = 0
@@ -70,7 +70,7 @@ function constantTimeCompare(a: string, b: string): boolean {
   const aBuf = Buffer.from(a)
   const bBuf = Buffer.from(b)
   if (aBuf.length !== bBuf.length) return false
-  return timingSafeEqual(aBuf, bBuf)
+  return NCrypto.timingSafeEqual(aBuf, bBuf)
 }
 
 export function startSocks5(options: Socks5Options): Promise<void> {
@@ -78,7 +78,7 @@ export function startSocks5(options: Socks5Options): Promise<void> {
   const requireAuth = !!username
 
   return new Promise((resolve, reject) => {
-    const server = createServer(async (client) => {
+    const server = NNet.createServer(async (client) => {
       try {
         await handleClient(client)
       } catch {
@@ -86,7 +86,7 @@ export function startSocks5(options: Socks5Options): Promise<void> {
       }
     })
 
-    async function handleClient(client: Socket) {
+    async function handleClient(client: NNet.Socket) {
       // Read greeting
       const greeting = await readExact(client, 2)
       if (greeting[0] !== SOCKS_VERSION) {
@@ -205,7 +205,7 @@ export function startSocks5(options: Socks5Options): Promise<void> {
       bridge(client, remote)
     }
 
-    function sendReply(client: Socket, rep: number, bindAddr: string, bindPort: number) {
+    function sendReply(client: NNet.Socket, rep: number, bindAddr: string, bindPort: number) {
       const parts = bindAddr.split(".").map(Number)
       const reply = Buffer.alloc(10)
       reply[0] = SOCKS_VERSION

@@ -3,33 +3,33 @@
  * Direct port from wireproxy/udp_proxy.go.
  */
 
-import { createSocket, Socket as UDPSocket } from "dgram"
+import * as NDgram from "node:dgram"
 
-export interface UDPProxyOptions {
+export interface UdpProxyOptions {
   bindAddress: string
   target: string
   inactivityTimeout: number // seconds, 0 = never timeout
-  dial: (target: string) => UDPSocket
+  dial: (target: string) => NDgram.Socket
 }
 
-interface UDPSession {
-  remoteSocket: UDPSocket
+interface UdpSession {
+  remoteSocket: NDgram.Socket
   lastActive: number
   closed: boolean
 }
 
-export function startUDPProxy(options: UDPProxyOptions): Promise<void> {
+export function startUdpProxy(options: UdpProxyOptions): Promise<void> {
   const { bindAddress, target, inactivityTimeout, dial } = options
-  const sessions = new Map<string, UDPSession>()
+  const sessions = new Map<string, UdpSession>()
   const inactivityMs = inactivityTimeout * 1000
 
   return new Promise((resolve, reject) => {
     const [host, portStr] = bindAddress.split(":")
     const port = parseInt(portStr!, 10)
 
-    const listener = createSocket("udp4")
+    const listener = NDgram.createSocket("udp4")
 
-    function closeSession(key: string, sess: UDPSession) {
+    function closeSession(key: string, sess: UdpSession) {
       if (sess.closed) return
       sess.closed = true
       sess.remoteSocket.close()

@@ -1,9 +1,9 @@
-import { createSocket as createUDPSocket } from "dgram"
-import { lookup } from "dns"
-import { Device } from "../device/Device.ts"
-import { Peer } from "../device/Peer.ts"
+import * as NDgram from "node:dgram"
+import * as NDns from "node:dns"
+import { Device } from "../wireguard/Device.ts"
+import { Peer } from "../wireguard/Peer.ts"
 import { TcpStack, TcpConnection } from "./TcpStack.ts"
-import type { ResolveConfig } from "../Config.ts"
+import type { ResolveConfig } from "../wireguard/Config.ts"
 
 export interface VirtualTunOptions {
   device: Device
@@ -16,8 +16,8 @@ export class VirtualTun {
   readonly device: Device
   readonly addresses: string[]
   readonly dns: string[]
-  private resolveStrategy: string
-  private tcpStack: TcpStack | null = null
+  #resolveStrategy: string
+  #tcpStack: TcpStack | null = null
 
   constructor(options: VirtualTunOptions) {
     this.device = options.device
@@ -45,10 +45,10 @@ export class VirtualTun {
 
     return new Promise((resolve, reject) => {
       const family = this.resolveStrategy === "ipv4" ? 4 : 6
-      lookup(hostname, { family, all: false }, (err, address) => {
+      NDns.lookup(hostname, { family, all: false }, (err, address) => {
         if (err) {
           // Fallback to any
-          lookup(hostname, (err2, addr2) => {
+          NDns.lookup(hostname, (err2, addr2) => {
             if (err2) reject(err2)
             else resolve(addr2)
           })
@@ -61,7 +61,7 @@ export class VirtualTun {
 
   async dial(host: string, port: number): Promise<TcpConnection> {
     const resolved = await this.resolve(host)
-    const peer = this.findPeerForAddress(resolved)
+    const peer = this.#findPeerForAddress(resolved)
 
     if (!peer?.endpoint) {
       throw new Error(`no peer found for ${host}:${port}`)
@@ -69,7 +69,7 @@ export class VirtualTun {
 
     // Ensure handshake is done
     if (!peer.currentKeypair) {
-      await this.ensureHandshake(peer)
+      await this.#ensureHandshake(peer)
     }
 
     if (!this.tcpStack) {
@@ -92,10 +92,10 @@ export class VirtualTun {
   }
 
   dialUDP(_target: string) {
-    return createUDPSocket("udp4")
+    return NDgram.createSocket("udp4")
   }
 
-  private ensureHandshake(peer: Peer): Promise<void> {
+  #ensureHandshake(peer: Peer): Promise<void> {
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         peer.removeListener("keypairReady", onReady)
@@ -112,13 +112,13 @@ export class VirtualTun {
     })
   }
 
-  private findPeerForAddress(addr: string): Peer | null {
+  #findPeerForAddress(addr: string): Peer | null {
     const peers = this.device.getPeers()
 
     for (const peer of peers) {
       for (const cidr of peer.allowedIPs) {
         if (cidr === "0.0.0.0/0" || cidr === "::/0") return peer
-        if (this.ipInCIDR(addr, cidr)) return peer
+        if (this.#ipInCIDR(addr, cidr)) return peer
       }
     }
 
@@ -126,20 +126,20 @@ export class VirtualTun {
     return peers[0] ?? null
   }
 
-  private ipInCIDR(ip: string, cidr: string): boolean {
+  #ipInCIDR(ip: string, cidr: string): boolean {
     const [prefix, bitsStr] = cidr.split("/")
     if (!prefix || !bitsStr) return ip === cidr
 
     const bits = parseInt(bitsStr, 10)
-    const ipNum = this.ipToNumber(ip)
-    const prefixNum = this.ipToNumber(prefix)
+    const ipNum = this.#ipToNumber(ip)
+    const prefixNum = this.#ipToNumber(prefix)
     if (ipNum === null || prefixNum === null) return false
 
     const mask = bits === 0 ? 0 : (~0 << (32 - bits)) >>> 0
     return (ipNum & mask) === (prefixNum & mask)
   }
 
-  private ipToNumber(ip: string): number | null {
+  #ipToNumber(ip: string): number | null {
     const parts = ip.split(".")
     if (parts.length !== 4) return null
     return parts.reduce((acc, p) => (acc << 8) | parseInt(p, 10), 0) >>> 0

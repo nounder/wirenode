@@ -1,17 +1,17 @@
-import { createServer, Socket, connect } from "net"
-import type { StreamPair } from "../net/bridge.ts"
-import { bridge } from "../net/bridge.ts"
+import * as NNet from "node:net"
+import type { StreamPair } from "../net/Bridge.ts"
+import { bridge } from "../net/Bridge.ts"
 
-export interface TCPClientTunnelOptions {
+export interface TcpClientTunnelOptions {
   bindAddress: string
   target: string
   dial: (host: string, port: number) => Promise<StreamPair>
 }
 
-export interface TCPServerTunnelOptions {
+export interface TcpServerTunnelOptions {
   listenPort: number
   target: string
-  listen: (port: number, cb: (socket: Socket) => void) => void
+  listen: (port: number, cb: (socket: NNet.Socket) => void) => void
 }
 
 function parseHostPort(addr: string): { host: string; port: number } {
@@ -22,14 +22,14 @@ function parseHostPort(addr: string): { host: string; port: number } {
   }
 }
 
-export function startTCPClientTunnel(options: TCPClientTunnelOptions): Promise<void> {
+export function startTcpClientTunnel(options: TcpClientTunnelOptions): Promise<void> {
   const { bindAddress, target, dial } = options
   const { host: targetHost, port: targetPort } = parseHostPort(target)
 
   return new Promise((resolve, reject) => {
     const { host, port } = parseHostPort(bindAddress)
 
-    const server = createServer(async (client) => {
+    const server = NNet.createServer(async (client) => {
       let remote: StreamPair
       try {
         remote = await dial(targetHost, targetPort)
@@ -50,12 +50,12 @@ export function startTCPClientTunnel(options: TCPClientTunnelOptions): Promise<v
   })
 }
 
-export function startTCPServerTunnel(options: TCPServerTunnelOptions): void {
+export function startTcpServerTunnel(options: TcpServerTunnelOptions): void {
   const { target } = options
   const { host: targetHost, port: targetPort } = parseHostPort(target)
 
   options.listen(options.listenPort, (client) => {
-    const remote = connect(targetPort, targetHost)
+    const remote = NNet.connect(targetPort, targetHost)
 
     client.pipe(remote)
     remote.pipe(client)

@@ -3,7 +3,7 @@
  * Handles handshake state, keypair rotation, and timers.
  */
 
-import { EventEmitter } from "events"
+import * as NEvents from "node:events"
 import * as Handshake from "../noise/Handshake.ts"
 
 export interface PeerConfig {
@@ -14,7 +14,7 @@ export interface PeerConfig {
   allowedIPs: string[] // CIDR strings
 }
 
-export class Peer extends EventEmitter {
+export class Peer extends NEvents.EventEmitter {
   readonly publicKey: Uint8Array
   readonly publicKeyHex: string
   endpoint: string | null
@@ -30,10 +30,10 @@ export class Peer extends EventEmitter {
   stagedPackets: Uint8Array[] = []
 
   // Timers
-  private keepaliveTimer: ReturnType<typeof setTimeout> | null = null
-  private handshakeTimer: ReturnType<typeof setTimeout> | null = null
-  private rekeyTimer: ReturnType<typeof setTimeout> | null = null
-  private zeroKeyTimer: ReturnType<typeof setTimeout> | null = null
+  #keepaliveTimer: ReturnType<typeof setTimeout> | null = null
+  #handshakeTimer: ReturnType<typeof setTimeout> | null = null
+  #rekeyTimer: ReturnType<typeof setTimeout> | null = null
+  #zeroKeyTimer: ReturnType<typeof setTimeout> | null = null
 
   lastHandshakeAttempt: number = 0
   lastSentPacket: number = 0
@@ -113,24 +113,24 @@ export class Peer extends EventEmitter {
   startKeepalive(): void {
     this.stopKeepalive()
     if (this.persistentKeepalive > 0) {
-      this.keepaliveTimer = setInterval(() => {
+      this.#keepaliveTimer = setInterval(() => {
         this.emit("sendKeepalive")
       }, this.persistentKeepalive * 1000)
     }
   }
 
   stopKeepalive(): void {
-    if (this.keepaliveTimer) {
-      clearInterval(this.keepaliveTimer)
-      this.keepaliveTimer = null
+    if (this.#keepaliveTimer) {
+      clearInterval(this.#keepaliveTimer)
+      this.#keepaliveTimer = null
     }
   }
 
   destroy(): void {
     this.stopKeepalive()
-    if (this.handshakeTimer) clearTimeout(this.handshakeTimer)
-    if (this.rekeyTimer) clearTimeout(this.rekeyTimer)
-    if (this.zeroKeyTimer) clearTimeout(this.zeroKeyTimer)
+    if (this.#handshakeTimer) clearTimeout(this.#handshakeTimer)
+    if (this.#rekeyTimer) clearTimeout(this.#rekeyTimer)
+    if (this.#zeroKeyTimer) clearTimeout(this.#zeroKeyTimer)
     this.removeAllListeners()
   }
 }

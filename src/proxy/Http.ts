@@ -4,14 +4,14 @@
  * Pure JS, no external dependencies.
  */
 
-import { createServer, Socket, Server } from "net"
-import { createServer as createTlsServer } from "tls"
-import { readFileSync } from "fs"
-import { timingSafeEqual } from "crypto"
-import type { StreamPair } from "../net/bridge.ts"
-import { bridge } from "../net/bridge.ts"
+import * as NNet from "node:net"
+import * as NTls from "node:tls"
+import * as NFs from "node:fs"
+import * as NCrypto from "node:crypto"
+import type { StreamPair } from "../net/Bridge.ts"
+import { bridge } from "../net/Bridge.ts"
 
-export interface HTTPProxyOptions {
+export interface HttpProxyOptions {
   bindAddress: string
   username?: string
   password?: string
@@ -24,30 +24,30 @@ function constantTimeCompare(a: string, b: string): boolean {
   const aBuf = Buffer.from(a)
   const bBuf = Buffer.from(b)
   if (aBuf.length !== bBuf.length) return false
-  return timingSafeEqual(aBuf, bBuf)
+  return NCrypto.timingSafeEqual(aBuf, bBuf)
 }
 
-export function startHTTPProxy(options: HTTPProxyOptions): Promise<void> {
+export function startHttpProxy(options: HttpProxyOptions): Promise<void> {
   const { bindAddress, username, password, certFile, keyFile, dial } = options
   const requireAuth = !!username || !!password
 
   return new Promise((resolve, reject) => {
-    const handler = (client: Socket) => {
+    const handler = (client: NNet.Socket) => {
       handleConnection(client).catch(() => client.destroy())
     }
 
-    let server: Server
+    let server: NNet.Server
     if (certFile && keyFile) {
-      const cert = readFileSync(certFile)
-      const key = readFileSync(keyFile)
-      server = createTlsServer({ cert, key }, handler) as unknown as Server
+      const cert = NFs.readFileSync(certFile)
+      const key = NFs.readFileSync(keyFile)
+      server = NTls.createServer({ cert, key }, handler) as unknown as NNet.Server
     } else {
-      server = createServer(handler)
+      server = NNet.createServer(handler)
     }
 
-    async function handleConnection(client: Socket) {
+    async function handleConnection(client: NNet.Socket) {
       // Read the HTTP request line and headers
-      const headerData = await readHTTPHeaders(client)
+      const headerData = await readHttpHeaders(client)
       if (!headerData) {
         client.destroy()
         return
@@ -93,14 +93,14 @@ export function startHTTPProxy(options: HTTPProxyOptions): Promise<void> {
         method === "OPTIONS" ||
         method === "PATCH"
       ) {
-        await handleHTTP(client, host, rawFirstLine, headers)
+        await handleHttp(client, host, rawFirstLine, headers)
       } else {
         sendResponse(client, 405, "Method Not Allowed")
         client.destroy()
       }
     }
 
-    async function handleConnect(client: Socket, hostPort: string) {
+    async function handleConnect(client: NNet.Socket, hostPort: string) {
       const { host, port } = parseHostPort(hostPort, 443)
 
       let remote: StreamPair
@@ -117,8 +117,8 @@ export function startHTTPProxy(options: HTTPProxyOptions): Promise<void> {
       bridge(client, remote)
     }
 
-    async function handleHTTP(
-      client: Socket,
+    async function handleHttp(
+      client: NNet.Socket,
       hostPort: string,
       firstLine: string,
       headers: Record<string, string>,
@@ -159,7 +159,7 @@ export function startHTTPProxy(options: HTTPProxyOptions): Promise<void> {
     }
 
     function sendResponse(
-      client: Socket,
+      client: NNet.Socket,
       code: number,
       status: string,
       headers?: Record<string, string>,
@@ -183,7 +183,7 @@ export function startHTTPProxy(options: HTTPProxyOptions): Promise<void> {
   })
 }
 
-interface HTTPHeaderResult {
+interface HttpHeaderResult {
   method: string
   host: string
   path: string
@@ -191,7 +191,7 @@ interface HTTPHeaderResult {
   rawFirstLine: string
 }
 
-function readHTTPHeaders(socket: Socket): Promise<HTTPHeaderResult | null> {
+function readHttpHeaders(socket: NNet.Socket): Promise<HttpHeaderResult | null> {
   return new Promise((resolve) => {
     let buf = ""
 

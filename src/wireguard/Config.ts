@@ -1,7 +1,7 @@
 /**
  * WireGuard/wireproxy ini configuration parser
  */
-import type { PeerConfig } from "./device/Peer.ts"
+import type { PeerConfig } from "./Peer.ts"
 
 export interface InterfaceConfig {
   privateKey: Uint8Array
@@ -13,13 +13,13 @@ export interface InterfaceConfig {
   checkAliveInterval: number
 }
 
-export interface TCPClientTunnelConfig {
+export interface TcpClientTunnelConfig {
   type: "tcpClient"
   bindAddress: string
   target: string
 }
 
-export interface TCPServerTunnelConfig {
+export interface TcpServerTunnelConfig {
   type: "tcpServer"
   listenPort: number
   target: string
@@ -32,7 +32,7 @@ export interface Socks5Config {
   password: string
 }
 
-export interface HTTPProxyConfig {
+export interface HttpProxyConfig {
   type: "http"
   bindAddress: string
   username: string
@@ -41,25 +41,25 @@ export interface HTTPProxyConfig {
   keyFile: string
 }
 
-export interface UDPProxyConfig {
+export interface UdpProxyConfig {
   type: "udp"
   bindAddress: string
   target: string
   inactivityTimeout: number
 }
 
-export interface STDIOTunnelConfig {
+export interface StdioTunnelConfig {
   type: "stdio"
   target: string
 }
 
 export type RoutineConfig =
-  | TCPClientTunnelConfig
-  | TCPServerTunnelConfig
+  | TcpClientTunnelConfig
+  | TcpServerTunnelConfig
   | Socks5Config
-  | HTTPProxyConfig
-  | UDPProxyConfig
-  | STDIOTunnelConfig
+  | HttpProxyConfig
+  | UdpProxyConfig
+  | StdioTunnelConfig
 
 export interface ResolveConfig {
   resolveStrategy: "auto" | "ipv4" | "ipv6"
