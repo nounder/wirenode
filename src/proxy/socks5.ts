@@ -5,13 +5,14 @@
 
 import { createServer, Socket } from "net"
 import { timingSafeEqual } from "crypto"
-import type { Duplex } from "stream"
+import type { StreamPair } from "../net/bridge.ts"
+import { bridge } from "../net/bridge.ts"
 
 export interface Socks5Options {
   bindAddress: string
   username?: string
   password?: string
-  dial: (host: string, port: number) => Promise<Duplex>
+  dial: (host: string, port: number) => Promise<StreamPair>
 }
 
 const SOCKS_VERSION = 0x05
@@ -23,8 +24,6 @@ const ATYP_IPV4 = 0x01
 const ATYP_DOMAIN = 0x03
 const ATYP_IPV6 = 0x04
 const REP_SUCCESS = 0x00
-const REP_GENERAL_FAILURE = 0x01
-const REP_CONNECTION_NOT_ALLOWED = 0x02
 const REP_HOST_UNREACHABLE = 0x04
 const REP_COMMAND_NOT_SUPPORTED = 0x07
 const REP_ADDR_TYPE_NOT_SUPPORTED = 0x08
@@ -191,7 +190,7 @@ export function startSocks5(options: Socks5Options): Promise<void> {
       }
 
       // Connect through WireGuard tunnel
-      let remote: Duplex
+      let remote: StreamPair
       try {
         remote = await dial(host, port)
       } catch {
@@ -202,14 +201,8 @@ export function startSocks5(options: Socks5Options): Promise<void> {
 
       sendReply(client, REP_SUCCESS, "0.0.0.0", 0)
 
-      // Bidirectional pipe
-      client.pipe(remote)
-      remote.pipe(client)
-
-      client.on("error", () => remote.destroy())
-      remote.on("error", () => client.destroy())
-      client.on("close", () => remote.destroy())
-      remote.on("close", () => client.destroy())
+      // Bidirectional bridge: Node Socket ↔ web streams
+      bridge(client, remote)
     }
 
     function sendReply(client: Socket, rep: number, bindAddr: string, bindPort: number) {

@@ -1,10 +1,11 @@
 import { createServer, Socket, connect } from "net"
-import type { Duplex } from "stream"
+import type { StreamPair } from "../net/bridge.ts"
+import { bridge } from "../net/bridge.ts"
 
 export interface TCPClientTunnelOptions {
   bindAddress: string
   target: string
-  dial: (host: string, port: number) => Promise<Duplex>
+  dial: (host: string, port: number) => Promise<StreamPair>
 }
 
 export interface TCPServerTunnelOptions {
@@ -29,7 +30,7 @@ export function startTCPClientTunnel(options: TCPClientTunnelOptions): Promise<v
     const { host, port } = parseHostPort(bindAddress)
 
     const server = createServer(async (client) => {
-      let remote: Duplex
+      let remote: StreamPair
       try {
         remote = await dial(targetHost, targetPort)
       } catch (err) {
@@ -38,12 +39,7 @@ export function startTCPClientTunnel(options: TCPClientTunnelOptions): Promise<v
         return
       }
 
-      client.pipe(remote)
-      remote.pipe(client)
-      client.on("error", () => remote.destroy())
-      remote.on("error", () => client.destroy())
-      client.on("close", () => remote.destroy())
-      remote.on("close", () => client.destroy())
+      bridge(client, remote)
     })
 
     server.listen(port, host, () => {

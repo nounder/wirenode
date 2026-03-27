@@ -25,7 +25,7 @@ export class VirtualTun {
     this.dns = options.dns
     this.resolveStrategy = options.resolveConfig.resolveStrategy
 
-    // Auto-detect resolve strategy
+    // Auto-detect resolve strategy — prefer IPv4 since our TCP stack only supports IPv4
     if (this.resolveStrategy === "auto") {
       const hasV4 = this.addresses.some((a) => !a.includes(":"))
       this.resolveStrategy = hasV4 ? "ipv4" : "ipv6"
@@ -79,27 +79,16 @@ export class VirtualTun {
     // Connect through the userspace TCP/IP stack over the WireGuard tunnel
     const conn = this.tcpStack.connect(resolved, port, peer)
 
-    return new Promise<TcpConnection>((resolve, reject) => {
-      const onConnect = () => {
-        conn.removeListener("error", onError)
-        clearTimeout(timeout)
-        resolve(conn)
-      }
-      const onError = (err: Error) => {
-        conn.removeListener("connect", onConnect)
-        clearTimeout(timeout)
-        reject(err)
-      }
-      const timeout = setTimeout(() => {
-        conn.removeListener("connect", onConnect)
-        conn.removeListener("error", onError)
-        conn.destroy()
+    // Wait for TCP handshake with timeout
+    const timeout = new Promise<never>((_, reject) =>
+      setTimeout(() => {
+        conn.close()
         reject(new Error("TCP connect timeout"))
-      }, 15_000)
+      }, 15_000),
+    )
 
-      conn.once("connect", onConnect)
-      conn.once("error", onError)
-    })
+    await Promise.race([conn.connected(), timeout])
+    return conn
   }
 
   dialUDP(_target: string) {

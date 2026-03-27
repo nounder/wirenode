@@ -5,11 +5,11 @@ import { parseConfig } from "./Config.ts"
 import type { Configuration } from "./Config.ts"
 import { Device } from "./device/Device.ts"
 import { VirtualTun } from "./net/VirtualTun.ts"
+import type { StreamPair } from "./net/bridge.ts"
 import * as Socks5 from "./proxy/Socks5.ts"
 import * as Http from "./proxy/Http.ts"
 import * as TcpTunnel from "./proxy/TcpTunnel.ts"
 import * as UdpProxy from "./proxy/UdpProxy.ts"
-import type { Duplex } from "stream"
 
 export interface WireproxyOptions {
   config: string // config file contents
@@ -63,8 +63,7 @@ export class Wireproxy {
       console.error(`WireGuard error: ${err.message}`)
     })
 
-    // Create dial function for proxies
-    const dial = async (host: string, port: number): Promise<Duplex> => {
+    const dial = async (host: string, port: number): Promise<StreamPair> => {
       return this.vt!.dial(host, port)
     }
 

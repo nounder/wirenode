@@ -8,7 +8,8 @@ import { createServer, Socket, Server } from "net"
 import { createServer as createTlsServer } from "tls"
 import { readFileSync } from "fs"
 import { timingSafeEqual } from "crypto"
-import type { Duplex } from "stream"
+import type { StreamPair } from "../net/bridge.ts"
+import { bridge } from "../net/bridge.ts"
 
 export interface HTTPProxyOptions {
   bindAddress: string
@@ -16,7 +17,7 @@ export interface HTTPProxyOptions {
   password?: string
   certFile?: string
   keyFile?: string
-  dial: (host: string, port: number) => Promise<Duplex>
+  dial: (host: string, port: number) => Promise<StreamPair>
 }
 
 function constantTimeCompare(a: string, b: string): boolean {
@@ -52,7 +53,7 @@ export function startHTTPProxy(options: HTTPProxyOptions): Promise<void> {
         return
       }
 
-      const { method, host, path, headers, rawFirstLine } = headerData
+      const { method, host, headers, rawFirstLine } = headerData
 
       // Authenticate
       if (requireAuth) {
@@ -102,7 +103,7 @@ export function startHTTPProxy(options: HTTPProxyOptions): Promise<void> {
     async function handleConnect(client: Socket, hostPort: string) {
       const { host, port } = parseHostPort(hostPort, 443)
 
-      let remote: Duplex
+      let remote: StreamPair
       try {
         remote = await dial(host, port)
       } catch {
@@ -113,12 +114,7 @@ export function startHTTPProxy(options: HTTPProxyOptions): Promise<void> {
 
       client.write("HTTP/1.1 200 Connection established\r\n\r\n")
 
-      client.pipe(remote)
-      remote.pipe(client)
-      client.on("error", () => remote.destroy())
-      remote.on("error", () => client.destroy())
-      client.on("close", () => remote.destroy())
-      remote.on("close", () => client.destroy())
+      bridge(client, remote)
     }
 
     async function handleHTTP(
@@ -129,7 +125,7 @@ export function startHTTPProxy(options: HTTPProxyOptions): Promise<void> {
     ) {
       const { host, port } = parseHostPort(hostPort, 80)
 
-      let remote: Duplex
+      let remote: StreamPair
       try {
         remote = await dial(host, port)
       } catch {
@@ -138,7 +134,7 @@ export function startHTTPProxy(options: HTTPProxyOptions): Promise<void> {
         return
       }
 
-      // Forward the original request
+      // Forward the original request via the writable stream
       let reqStr = firstLine + "\r\n"
       for (const [k, v] of Object.entries(headers)) {
         if (k.toLowerCase() === "proxy-authorization") continue
@@ -146,14 +142,12 @@ export function startHTTPProxy(options: HTTPProxyOptions): Promise<void> {
         reqStr += `${k}: ${v}\r\n`
       }
       reqStr += "\r\n"
-      remote.write(reqStr)
 
-      client.pipe(remote)
-      remote.pipe(client)
-      client.on("error", () => remote.destroy())
-      remote.on("error", () => client.destroy())
-      client.on("close", () => remote.destroy())
-      remote.on("close", () => client.destroy())
+      const writer = remote.writable.getWriter()
+      await writer.write(new TextEncoder().encode(reqStr))
+      writer.releaseLock()
+
+      bridge(client, remote)
     }
 
     function parseHostPort(hp: string, defaultPort: number): { host: string; port: number } {

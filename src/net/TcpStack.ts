@@ -3,13 +3,8 @@
  *
  * Handles: IPv4 header construction/parsing, TCP 3-way handshake,
  * data transfer with sliding window, retransmission, and connection teardown.
- *
- * This is intentionally minimal — just enough for outbound CONNECT-style proxying.
  */
-
-import { Duplex } from "stream"
 import { randomBytes } from "crypto"
-import { EventEmitter } from "events"
 import type { Device } from "../device/Device.ts"
 import type { Peer } from "../device/Peer.ts"
 
@@ -203,6 +198,7 @@ const RETRANSMIT_MS = 1000
 const MAX_RETRANSMITS = 8
 const RECV_WINDOW = 65535
 const TIME_WAIT_MS = 2000
+const MSS = 1360
 
 interface UnackedSegment {
   seqNum: number
@@ -212,7 +208,7 @@ interface UnackedSegment {
   length: number // number of sequence numbers consumed (payload + SYN/FIN flags)
 }
 
-export class TcpConnection extends Duplex {
+export class TcpConnection {
   private state = TcpState.CLOSED
   private localPort: number
   private remotePort: number
@@ -223,13 +219,23 @@ export class TcpConnection extends Duplex {
   private ipId = 1
 
   private sendSeq: number // next sequence number to send
-  private recvSeq: number = 0 // next expected sequence number from remote
+  private recvSeq: number = 0
 
   private unacked: UnackedSegment[] = []
   private retransmitTimer: ReturnType<typeof setInterval> | null = null
   private timeWaitTimer: ReturnType<typeof setTimeout> | null = null
 
-  private destroyed_ = false
+  private destroyed = false
+
+  // Web streams
+  readonly readable: ReadableStream<Uint8Array>
+  readonly writable: WritableStream<Uint8Array>
+  private readableController: ReadableStreamDefaultController<Uint8Array> | null = null
+
+  // Events (minimal, just connect/error/close for lifecycle)
+  private connectResolve: (() => void) | null = null
+  private connectReject: ((err: Error) => void) | null = null
+  private onClose: (() => void) | null = null
 
   constructor(
     localIP: Uint8Array,
@@ -239,7 +245,6 @@ export class TcpConnection extends Duplex {
     peer: Peer,
     device: Device,
   ) {
-    super()
     this.localIP = localIP
     this.remoteIP = remoteIP
     this.localPort = localPort
@@ -250,6 +255,45 @@ export class TcpConnection extends Duplex {
     // Initial sequence number
     const rnd = randomBytes(4)
     this.sendSeq = new DataView(rnd.buffer).getUint32(0, false)
+
+    // Create ReadableStream
+    this.readable = new ReadableStream<Uint8Array>({
+      start: (controller) => {
+        this.readableController = controller
+      },
+      cancel: () => {
+        this.close()
+      },
+    })
+
+    // Create WritableStream
+    this.writable = new WritableStream<Uint8Array>({
+      write: (chunk) => {
+        this.writeData(chunk)
+      },
+      close: () => {
+        if (this.state === TcpState.ESTABLISHED) {
+          this.sendFIN()
+          this.state = TcpState.FIN_WAIT_1
+        }
+      },
+      abort: () => {
+        this.close()
+      },
+    })
+  }
+
+  /** Returns a promise that resolves when TCP handshake completes */
+  connected(): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      this.connectResolve = resolve
+      this.connectReject = reject
+    })
+  }
+
+  /** Register a callback for when the connection is fully closed */
+  onClosed(cb: () => void): void {
+    this.onClose = cb
   }
 
   /** Initiate TCP handshake (SYN) */
@@ -262,7 +306,7 @@ export class TcpConnection extends Duplex {
 
   /** Called by TcpStack when an IP packet arrives for this connection */
   handlePacket(tcpHeader: TCPHeader): void {
-    if (this.destroyed_) return
+    if (this.destroyed) return
 
     switch (this.state) {
       case TcpState.SYN_SENT:
@@ -284,12 +328,21 @@ export class TcpConnection extends Duplex {
         this.handleLastAck(tcpHeader)
         break
       case TcpState.TIME_WAIT:
-        // Already waiting, just ACK
         if (tcpHeader.flags & TCP_FIN) {
           this.sendACK()
         }
         break
     }
+  }
+
+  /** Forcefully close the connection */
+  close(): void {
+    if (this.destroyed) return
+    this.destroyed = true
+    if (this.state === TcpState.ESTABLISHED || this.state === TcpState.CLOSE_WAIT) {
+      this.sendRST()
+    }
+    this.cleanup()
   }
 
   private handleSynSent(tcp: TCPHeader): void {
@@ -299,12 +352,13 @@ export class TcpConnection extends Duplex {
     }
 
     if ((tcp.flags & (TCP_SYN | TCP_ACK)) === (TCP_SYN | TCP_ACK)) {
-      // SYN-ACK received
       this.recvSeq = (tcp.seqNum + 1) >>> 0
       this.ackReceived(tcp.ackNum)
       this.state = TcpState.ESTABLISHED
       this.sendACK()
-      this.emit("connect")
+      this.connectResolve?.()
+      this.connectResolve = null
+      this.connectReject = null
     }
   }
 
@@ -314,7 +368,6 @@ export class TcpConnection extends Duplex {
       return
     }
 
-    // Process ACK
     if (tcp.flags & TCP_ACK) {
       this.ackReceived(tcp.ackNum)
     }
@@ -323,22 +376,21 @@ export class TcpConnection extends Duplex {
     if (tcp.payload.length > 0) {
       if (tcp.seqNum === this.recvSeq) {
         this.recvSeq = (this.recvSeq + tcp.payload.length) >>> 0
-        this.push(Buffer.from(tcp.payload))
+        this.readableController?.enqueue(new Uint8Array(tcp.payload))
         this.sendACK()
       } else if (seqAfter(tcp.seqNum, this.recvSeq)) {
-        // Out of order — just ACK with our expected seq
         this.sendACK()
       }
-      // else: duplicate, ignore
     }
 
     // Process FIN
     if (tcp.flags & TCP_FIN) {
       this.recvSeq = (this.recvSeq + 1) >>> 0
       this.sendACK()
-      this.push(null) // signal EOF to reader
+      try { this.readableController?.close() } catch { }
+      this.readableController = null
       this.state = TcpState.CLOSE_WAIT
-      // We immediately send our FIN
+      // Immediately send our FIN
       this.sendFIN()
       this.state = TcpState.LAST_ACK
     }
@@ -354,28 +406,24 @@ export class TcpConnection extends Duplex {
       this.ackReceived(tcp.ackNum)
     }
 
-    // Process any remaining data
     if (tcp.payload.length > 0 && tcp.seqNum === this.recvSeq) {
       this.recvSeq = (this.recvSeq + tcp.payload.length) >>> 0
-      this.push(Buffer.from(tcp.payload))
+      this.readableController?.enqueue(new Uint8Array(tcp.payload))
     }
 
     if (tcp.flags & TCP_FIN) {
       this.recvSeq = (this.recvSeq + 1) >>> 0
       this.sendACK()
 
-      // Check if our FIN was also ACKed
       if (this.unacked.length === 0) {
-        // Both FINs exchanged
         this.enterTimeWait()
       } else {
-        // Simultaneous close
         this.state = TcpState.TIME_WAIT
         this.enterTimeWait()
       }
-      this.push(null)
+      try { this.readableController?.close() } catch { }
+      this.readableController = null
     } else if (this.unacked.length === 0) {
-      // Our FIN was ACKed
       this.state = TcpState.FIN_WAIT_2
     }
   }
@@ -386,17 +434,17 @@ export class TcpConnection extends Duplex {
       return
     }
 
-    // Process remaining data
     if (tcp.payload.length > 0 && tcp.seqNum === this.recvSeq) {
       this.recvSeq = (this.recvSeq + tcp.payload.length) >>> 0
-      this.push(Buffer.from(tcp.payload))
+      this.readableController?.enqueue(new Uint8Array(tcp.payload))
       this.sendACK()
     }
 
     if (tcp.flags & TCP_FIN) {
       this.recvSeq = (this.recvSeq + 1) >>> 0
       this.sendACK()
-      this.push(null)
+      try { this.readableController?.close() } catch { }
+      this.readableController = null
       this.enterTimeWait()
     }
   }
@@ -416,49 +464,19 @@ export class TcpConnection extends Duplex {
     }
   }
 
-  // ─── Duplex stream interface ────────────────────────────────────────────
+  // ─── Writing ──────────────────────────────────────────────────────────────
 
-  override _read(): void {
-    // Data is pushed in handleEstablished
-  }
+  private writeData(chunk: Uint8Array): void {
+    if (this.state !== TcpState.ESTABLISHED || this.destroyed) return
 
-  override _write(chunk: Buffer, _encoding: string, callback: (error?: Error | null) => void): void {
-    if (this.state !== TcpState.ESTABLISHED || this.destroyed_) {
-      callback(new Error("not connected"))
-      return
-    }
-
-    // Split into MSS-sized chunks
-    const mss = 1360
     let offset = 0
     while (offset < chunk.length) {
-      const end = Math.min(offset + mss, chunk.length)
-      const data = new Uint8Array(chunk.subarray(offset, end))
+      const end = Math.min(offset + MSS, chunk.length)
+      const data = chunk.subarray(offset, end)
       this.sendTCP(TCP_ACK | TCP_PSH, data)
       this.sendSeq = (this.sendSeq + data.length) >>> 0
       offset = end
     }
-
-    callback()
-  }
-
-  override _final(callback: (error?: Error | null) => void): void {
-    if (this.state === TcpState.ESTABLISHED) {
-      this.sendFIN()
-      this.state = TcpState.FIN_WAIT_1
-    }
-    callback()
-  }
-
-  override _destroy(err: Error | null, callback: (error?: Error | null) => void): void {
-    if (!this.destroyed_) {
-      this.destroyed_ = true
-      if (this.state === TcpState.ESTABLISHED || this.state === TcpState.CLOSE_WAIT) {
-        this.sendRST()
-      }
-      this.cleanup()
-    }
-    callback(err)
   }
 
   // ─── Sending helpers ────────────────────────────────────────────────────
@@ -479,7 +497,6 @@ export class TcpConnection extends Duplex {
     const ipPacket = buildIPv4Header(this.localIP, this.remoteIP, IP_PROTO_TCP, segment, this.ipId++)
     if (this.ipId > 0xffff) this.ipId = 1
 
-    // Track unacked if it consumes sequence space
     const seqLen = payload.length + ((flags & TCP_SYN) ? 1 : 0) + ((flags & TCP_FIN) ? 1 : 0)
     if (seqLen > 0) {
       this.unacked.push({
@@ -514,7 +531,7 @@ export class TcpConnection extends Duplex {
 
   private sendFIN(): void {
     this.sendTCP(TCP_ACK | TCP_FIN, new Uint8Array(0))
-    this.sendSeq = (this.sendSeq + 1) >>> 0 // FIN consumes a sequence number
+    this.sendSeq = (this.sendSeq + 1) >>> 0
   }
 
   private sendRST(): void {
@@ -558,7 +575,6 @@ export class TcpConnection extends Duplex {
   }
 
   private ackReceived(ackNum: number): void {
-    // Remove all segments that have been fully acknowledged
     this.unacked = this.unacked.filter((seg) => {
       const segEnd = (seg.seqNum + seg.length) >>> 0
       return seqAfter(segEnd, ackNum)
@@ -592,13 +608,20 @@ export class TcpConnection extends Duplex {
       this.timeWaitTimer = null
     }
     this.unacked = []
-    this.emit("close_")
+    try { this.readableController?.close() } catch { }
+    this.readableController = null
+    this.onClose?.()
   }
 
   private emitError(msg: string): void {
     this.state = TcpState.CLOSED
+    const err = new Error(msg)
+    this.connectReject?.(err)
+    this.connectResolve = null
+    this.connectReject = null
+    try { this.readableController?.error(err) } catch { }
+    this.readableController = null
     this.cleanup()
-    this.destroy(new Error(msg))
   }
 
   /** Connection key for lookup */
@@ -632,13 +655,12 @@ function allocatePort(): number {
   return port
 }
 
-export class TcpStack extends EventEmitter {
+export class TcpStack {
   private device: Device
   private connections: Map<string, TcpConnection> = new Map()
   private localIP: Uint8Array
 
   constructor(device: Device, localIP: string) {
-    super()
     this.device = device
     this.localIP = parseIPAddress(localIP)
 
@@ -658,7 +680,7 @@ export class TcpStack extends EventEmitter {
     const key = connectionKey(localPort, port, remoteIP)
     this.connections.set(key, conn)
 
-    conn.on("close_", () => {
+    conn.onClosed(() => {
       this.connections.delete(key)
     })
 
@@ -674,11 +696,9 @@ export class TcpStack extends EventEmitter {
     const tcp = parseTCPSegment(ip.payload)
     if (!tcp) return
 
-    // Find matching connection
     const key = connectionKey(tcp.dstPort, tcp.srcPort, ip.src)
     const conn = this.connections.get(key)
     if (!conn) {
-      // No connection — send RST if it's not already a RST
       if (!(tcp.flags & TCP_RST)) {
         this.sendRST(ip, tcp)
       }
@@ -701,12 +721,11 @@ export class TcpStack extends EventEmitter {
       flags,
       0,
       new Uint8Array(0),
-      ip.dst, // our IP
-      ip.src, // their IP
+      ip.dst,
+      ip.src,
     )
 
     const ipPacket = buildIPv4Header(ip.dst, ip.src, IP_PROTO_TCP, segment, 0)
-    // Find any peer to send through
     const peers = this.device.getPeers()
     if (peers[0]) {
       this.device.sendPacket(peers[0], ipPacket)
@@ -715,7 +734,7 @@ export class TcpStack extends EventEmitter {
 
   destroy(): void {
     for (const conn of this.connections.values()) {
-      conn.destroy()
+      conn.close()
     }
     this.connections.clear()
   }
