@@ -1,9 +1,10 @@
 import { createServer, Socket, connect } from "net"
+import type { Duplex } from "stream"
 
 export interface TCPClientTunnelOptions {
   bindAddress: string
   target: string
-  dial: (host: string, port: number) => Promise<Socket>
+  dial: (host: string, port: number) => Promise<Duplex>
 }
 
 export interface TCPServerTunnelOptions {
@@ -28,7 +29,7 @@ export function startTCPClientTunnel(options: TCPClientTunnelOptions): Promise<v
     const { host, port } = parseHostPort(bindAddress)
 
     const server = createServer(async (client) => {
-      let remote: Socket
+      let remote: Duplex
       try {
         remote = await dial(targetHost, targetPort)
       } catch (err) {

@@ -378,9 +378,25 @@ export class Device extends EventEmitter {
 
     // Emit decrypted packet (skip keepalives = empty packets)
     if (plaintext.length > 0) {
-      // Strip padding (trailing zeros)
+      // Use IP total length to determine actual packet size (WireGuard pads to 16-byte boundary)
       let end = plaintext.length
-      while (end > 0 && plaintext[end - 1] === 0) end--
+      if (plaintext.length >= 4) {
+        const version = (plaintext[0]! >> 4) & 0xf
+        if (version === 4) {
+          // IPv4: total length at offset 2-3
+          const totalLen = (plaintext[2]! << 8) | plaintext[3]!
+          if (totalLen > 0 && totalLen <= plaintext.length) {
+            end = totalLen
+          }
+        } else if (version === 6 && plaintext.length >= 40) {
+          // IPv6: payload length at offset 4-5 + 40 byte header
+          const payloadLen = (plaintext[4]! << 8) | plaintext[5]!
+          const totalLen = 40 + payloadLen
+          if (totalLen > 0 && totalLen <= plaintext.length) {
+            end = totalLen
+          }
+        }
+      }
       this.emit("packet", plaintext.subarray(0, end), peer)
     }
   }

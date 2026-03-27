@@ -5,12 +5,13 @@
 
 import { createServer, Socket } from "net"
 import { timingSafeEqual } from "crypto"
+import type { Duplex } from "stream"
 
 export interface Socks5Options {
   bindAddress: string
   username?: string
   password?: string
-  dial: (host: string, port: number) => Promise<Socket>
+  dial: (host: string, port: number) => Promise<Duplex>
 }
 
 const SOCKS_VERSION = 0x05
@@ -190,7 +191,7 @@ export function startSocks5(options: Socks5Options): Promise<void> {
       }
 
       // Connect through WireGuard tunnel
-      let remote: Socket
+      let remote: Duplex
       try {
         remote = await dial(host, port)
       } catch {

@@ -1,8 +1,8 @@
-import { Socket, connect } from "net"
 import { createSocket as createUDPSocket } from "dgram"
 import { lookup } from "dns"
 import { Device } from "../device/Device.ts"
 import { Peer } from "../device/Peer.ts"
+import { TcpStack, TcpConnection } from "./TcpStack.ts"
 import type { ResolveConfig } from "../Config.ts"
 
 export interface VirtualTunOptions {
@@ -17,6 +17,7 @@ export class VirtualTun {
   readonly addresses: string[]
   readonly dns: string[]
   private resolveStrategy: string
+  private tcpStack: TcpStack | null = null
 
   constructor(options: VirtualTunOptions) {
     this.device = options.device
@@ -27,8 +28,13 @@ export class VirtualTun {
     // Auto-detect resolve strategy
     if (this.resolveStrategy === "auto") {
       const hasV4 = this.addresses.some((a) => !a.includes(":"))
-      const hasV6 = this.addresses.some((a) => a.includes(":"))
-      this.resolveStrategy = hasV4 && !hasV6 ? "ipv4" : "ipv6"
+      this.resolveStrategy = hasV4 ? "ipv4" : "ipv6"
+    }
+
+    // Initialize userspace TCP/IP stack with our tunnel IP
+    const ipv4Addr = this.addresses.find((a) => !a.includes(":"))
+    if (ipv4Addr) {
+      this.tcpStack = new TcpStack(this.device, ipv4Addr)
     }
   }
 
@@ -53,7 +59,7 @@ export class VirtualTun {
     })
   }
 
-  async dial(host: string, port: number): Promise<Socket> {
+  async dial(host: string, port: number): Promise<TcpConnection> {
     const resolved = await this.resolve(host)
     const peer = this.findPeerForAddress(resolved)
 
@@ -66,13 +72,33 @@ export class VirtualTun {
       await this.ensureHandshake(peer)
     }
 
-    // Connect to the destination through the peer
-    // The peer's endpoint is the WireGuard server, which routes traffic
-    return new Promise<Socket>((resolve, reject) => {
-      const socket = connect(port, resolved, () => {
-        resolve(socket)
-      })
-      socket.on("error", reject)
+    if (!this.tcpStack) {
+      throw new Error("no IPv4 address configured — TCP stack unavailable")
+    }
+
+    // Connect through the userspace TCP/IP stack over the WireGuard tunnel
+    const conn = this.tcpStack.connect(resolved, port, peer)
+
+    return new Promise<TcpConnection>((resolve, reject) => {
+      const onConnect = () => {
+        conn.removeListener("error", onError)
+        clearTimeout(timeout)
+        resolve(conn)
+      }
+      const onError = (err: Error) => {
+        conn.removeListener("connect", onConnect)
+        clearTimeout(timeout)
+        reject(err)
+      }
+      const timeout = setTimeout(() => {
+        conn.removeListener("connect", onConnect)
+        conn.removeListener("error", onError)
+        conn.destroy()
+        reject(new Error("TCP connect timeout"))
+      }, 15_000)
+
+      conn.once("connect", onConnect)
+      conn.once("error", onError)
     })
   }
 
@@ -128,5 +154,9 @@ export class VirtualTun {
     const parts = ip.split(".")
     if (parts.length !== 4) return null
     return parts.reduce((acc, p) => (acc << 8) | parseInt(p, 10), 0) >>> 0
+  }
+
+  destroy(): void {
+    this.tcpStack?.destroy()
   }
 }

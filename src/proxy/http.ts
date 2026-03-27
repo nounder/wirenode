@@ -8,6 +8,7 @@ import { createServer, Socket, Server } from "net"
 import { createServer as createTlsServer } from "tls"
 import { readFileSync } from "fs"
 import { timingSafeEqual } from "crypto"
+import type { Duplex } from "stream"
 
 export interface HTTPProxyOptions {
   bindAddress: string
@@ -15,7 +16,7 @@ export interface HTTPProxyOptions {
   password?: string
   certFile?: string
   keyFile?: string
-  dial: (host: string, port: number) => Promise<Socket>
+  dial: (host: string, port: number) => Promise<Duplex>
 }
 
 function constantTimeCompare(a: string, b: string): boolean {
@@ -101,7 +102,7 @@ export function startHTTPProxy(options: HTTPProxyOptions): Promise<void> {
     async function handleConnect(client: Socket, hostPort: string) {
       const { host, port } = parseHostPort(hostPort, 443)
 
-      let remote: Socket
+      let remote: Duplex
       try {
         remote = await dial(host, port)
       } catch {
@@ -128,7 +129,7 @@ export function startHTTPProxy(options: HTTPProxyOptions): Promise<void> {
     ) {
       const { host, port } = parseHostPort(hostPort, 80)
 
-      let remote: Socket
+      let remote: Duplex
       try {
         remote = await dial(host, port)
       } catch {

@@ -9,7 +9,7 @@ import * as Socks5 from "./proxy/Socks5.ts"
 import * as Http from "./proxy/Http.ts"
 import * as TcpTunnel from "./proxy/TcpTunnel.ts"
 import * as UdpProxy from "./proxy/UdpProxy.ts"
-import type { Socket } from "net"
+import type { Duplex } from "stream"
 
 export interface WireproxyOptions {
   config: string // config file contents
@@ -64,7 +64,7 @@ export class Wireproxy {
     })
 
     // Create dial function for proxies
-    const dial = async (host: string, port: number): Promise<Socket> => {
+    const dial = async (host: string, port: number): Promise<Duplex> => {
       return this.vt!.dial(host, port)
     }
 
