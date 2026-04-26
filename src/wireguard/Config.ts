@@ -85,12 +85,12 @@ type Result<T> =
 
 export type ConfigResult = Result<Configuration>
 
-interface SectionEntry {
+export interface SectionEntry {
   value: string
   line: number
 }
 
-interface Section {
+export interface Section {
   name: string
   line: number
   entries: Map<string, SectionEntry>
@@ -142,7 +142,7 @@ export function formatConfigError(error: ConfigError): string {
   return details.length > 0 ? `${error.message} (${details.join(", ")})` : error.message
 }
 
-function parseSections(text: string): Result<Section[]> {
+export function parseSections(text: string): Result<Section[]> {
   const sections: Section[] = []
   let current: Section | null = null
 
@@ -391,11 +391,13 @@ function parseResolveStrategy(
   }
 }
 
-export function parseConfig(text: string): ConfigResult {
+export function parse(text: string): ConfigResult {
   const parsed = parseSections(text)
   if (!parsed.ok) return parsed
+  return build(parsed.value)
+}
 
-  const sections = parsed.value
+export function build(sections: Section[]): ConfigResult {
   const known = validateKnownConfig(sections)
   if (!known.ok) return known
 

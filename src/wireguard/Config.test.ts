@@ -33,7 +33,7 @@ InactivityTimeout = 30
 `
 
 test("parse config - interface section", () => {
-  const result = Config.parseConfig(sampleConfig)
+  const result = Config.parse(sampleConfig)
   expect(result.ok).toBe(true)
   if (!result.ok) return
 
@@ -44,7 +44,7 @@ test("parse config - interface section", () => {
 })
 
 test("parse config - peer section", () => {
-  const result = Config.parseConfig(sampleConfig)
+  const result = Config.parse(sampleConfig)
   expect(result.ok).toBe(true)
   if (!result.ok) return
 
@@ -56,7 +56,7 @@ test("parse config - peer section", () => {
 })
 
 test("parse config - socks5 section", () => {
-  const result = Config.parseConfig(sampleConfig)
+  const result = Config.parse(sampleConfig)
   expect(result.ok).toBe(true)
   if (!result.ok) return
 
@@ -70,7 +70,7 @@ test("parse config - socks5 section", () => {
 })
 
 test("parse config - http section", () => {
-  const result = Config.parseConfig(sampleConfig)
+  const result = Config.parse(sampleConfig)
   expect(result.ok).toBe(true)
   if (!result.ok) return
 
@@ -82,7 +82,7 @@ test("parse config - http section", () => {
 })
 
 test("parse config - tcp client tunnel", () => {
-  const result = Config.parseConfig(sampleConfig)
+  const result = Config.parse(sampleConfig)
   expect(result.ok).toBe(true)
   if (!result.ok) return
 
@@ -95,7 +95,7 @@ test("parse config - tcp client tunnel", () => {
 })
 
 test("parse config - udp proxy tunnel", () => {
-  const result = Config.parseConfig(sampleConfig)
+  const result = Config.parse(sampleConfig)
   expect(result.ok).toBe(true)
   if (!result.ok) return
 
@@ -109,7 +109,7 @@ test("parse config - udp proxy tunnel", () => {
 })
 
 test("parse config - default resolve strategy", () => {
-  const result = Config.parseConfig(sampleConfig)
+  const result = Config.parse(sampleConfig)
   expect(result.ok).toBe(true)
   if (!result.ok) return
 
@@ -117,7 +117,7 @@ test("parse config - default resolve strategy", () => {
 })
 
 test("missing interface section returns error", () => {
-  const result = Config.parseConfig(
+  const result = Config.parse(
     "[Peer]\nPublicKey = AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\n",
   )
   expect(result.ok).toBe(false)
@@ -127,7 +127,7 @@ test("missing interface section returns error", () => {
 })
 
 test("missing peer section returns error", () => {
-  const result = Config.parseConfig(
+  const result = Config.parse(
     "[Interface]\nPrivateKey = YNqHbfBQKaGvzefJtfkbMuig9bLFPiuo1PKKTq1HE0g=\nAddress = 10.0.0.1\n",
   )
   expect(result.ok).toBe(false)
@@ -137,7 +137,7 @@ test("missing peer section returns error", () => {
 })
 
 test("multiple peers", () => {
-  const result = Config.parseConfig(`
+  const result = Config.parse(`
 [Interface]
 PrivateKey = YNqHbfBQKaGvzefJtfkbMuig9bLFPiuo1PKKTq1HE0g=
 Address = 10.0.0.1
@@ -157,7 +157,7 @@ Endpoint = server2:51820
 })
 
 test("unknown section returns error", () => {
-  const result = Config.parseConfig(`
+  const result = Config.parse(`
 [Interface]
 PrivateKey = YNqHbfBQKaGvzefJtfkbMuig9bLFPiuo1PKKTq1HE0g=
 
@@ -174,7 +174,7 @@ BindAddress = 127.0.0.1:1080
 })
 
 test("unknown key returns error", () => {
-  const result = Config.parseConfig(`
+  const result = Config.parse(`
 [Interface]
 PrivateKey = YNqHbfBQKaGvzefJtfkbMuig9bLFPiuo1PKKTq1HE0g=
 Address = 10.0.0.1
@@ -190,7 +190,7 @@ PublicKey = AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
 })
 
 test("unsupported wg-quick key returns unknown key error", () => {
-  const result = Config.parseConfig(`
+  const result = Config.parse(`
 [Interface]
 PrivateKey = YNqHbfBQKaGvzefJtfkbMuig9bLFPiuo1PKKTq1HE0g=
 Address = 10.0.0.1

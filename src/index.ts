@@ -4,8 +4,7 @@
  * Compatible with pufferffish/wireproxy configuration format.
  */
 import { Wireproxy } from "./Wireproxy.ts"
-import { formatConfigError, parseConfig } from "./wireguard/Config.ts"
-import type { Configuration } from "./wireguard/Config.ts"
+import * as Config from "./wireguard/Config.ts"
 
 export { Wireproxy }
 export { Device } from "./wireguard/Device.ts"
@@ -25,6 +24,7 @@ if (import.meta.main) {
   let infoAddress = ""
   let showVersion = false
   let showHelp = false
+  const overrides: string[] = []
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]!
@@ -57,6 +57,10 @@ if (import.meta.main) {
       case "--info":
         infoAddress = args[++i] ?? ""
         break
+      case "-o":
+      case "--override":
+        overrides.push(args[++i] ?? "")
+        break
       default:
         if (!arg.startsWith("-") && !configPath) {
           configPath = arg
@@ -85,6 +89,7 @@ Options:
   -s, --silent           Suppress log output
   -d, --daemon           Run in background (daemonize)
   -i, --info <addr:port> Expose health/status endpoint
+  -o, --override <S.K=V> Override a config value (repeatable, e.g. HTTP.BindAddress=127.0.0.1:8080)
   -v, --version          Show version
   -h, --help             Show this help
 `)
@@ -99,9 +104,21 @@ Options:
     process.exit(1)
   }
 
-  const configResult = parseConfig(configText)
+  const sectionsResult = Config.parseSections(configText)
+  if (!sectionsResult.ok) {
+    console.error(`Configuration error: ${Config.formatConfigError(sectionsResult.error)}`)
+    process.exit(1)
+  }
+
+  const overrideResult = applyOverrides(sectionsResult.value, overrides)
+  if (!overrideResult.ok) {
+    console.error(`Configuration error: ${overrideResult.error}`)
+    process.exit(1)
+  }
+
+  const configResult = Config.build(sectionsResult.value)
   if (!configResult.ok) {
-    console.error(`Configuration error: ${formatConfigError(configResult.error)}`)
+    console.error(`Configuration error: ${Config.formatConfigError(configResult.error)}`)
     process.exit(1)
   }
 
@@ -183,7 +200,34 @@ Options:
   }
 }
 
-function validateCliConfig(config: Configuration): { ok: true } | { ok: false; error: string } {
+function applyOverrides(
+  sections: Config.Section[],
+  overrides: string[],
+): { ok: true } | { ok: false; error: string } {
+  for (const raw of overrides) {
+    const eq = raw.indexOf("=")
+    const dot = raw.indexOf(".")
+    if (dot === -1 || eq === -1 || dot > eq) {
+      return { ok: false, error: `invalid override "${raw}", expected Section.Key=Value` }
+    }
+    const sectionName = raw.slice(0, dot).trim().toLowerCase()
+    const key = raw.slice(dot + 1, eq).trim().toLowerCase()
+    const value = raw.slice(eq + 1).trim()
+    if (!sectionName || !key) {
+      return { ok: false, error: `invalid override "${raw}", expected Section.Key=Value` }
+    }
+
+    let section = sections.find((s) => s.name === sectionName)
+    if (!section) {
+      section = { name: sectionName, line: 0, entries: new Map() }
+      sections.push(section)
+    }
+    section.entries.set(key, { value, line: 0 })
+  }
+  return { ok: true }
+}
+
+function validateCliConfig(config: Config.Configuration): { ok: true } | { ok: false; error: string } {
   const runnable = config.routines.filter(
     (routine) =>
       routine.type === "socks5" ||

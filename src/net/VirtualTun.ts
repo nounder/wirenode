@@ -3,20 +3,20 @@ import { Device } from "../wireguard/Device.ts"
 import { Peer } from "../wireguard/Peer.ts"
 import { TcpStack, TcpConnection } from "./TcpStack.ts"
 import { UdpStack, type UdpSession } from "./UdpStack.ts"
-import type { ResolveConfig } from "../wireguard/Config.ts"
+import * as Config from "../wireguard/Config.ts"
 
 export interface VirtualTunOptions {
   device: Device
   addresses: string[] // local interface addresses
   dns: string[]
-  resolveConfig: ResolveConfig
+  resolveConfig: Config.ResolveConfig
 }
 
 export class VirtualTun {
   readonly device: Device
   readonly addresses: string[]
   readonly dns: string[]
-  #resolveStrategy: ResolveConfig["resolveStrategy"]
+  #resolveStrategy: Config.ResolveConfig["resolveStrategy"]
   #tcpStack: TcpStack | null = null
   #udpStack: UdpStack | null = null
 

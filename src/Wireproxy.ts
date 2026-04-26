@@ -1,7 +1,7 @@
 /**
  * WireGuard client with SOCKS5/HTTP proxy support.
  */
-import type { Configuration } from "./wireguard/Config.ts"
+import * as Config from "./wireguard/Config.ts"
 import { Device } from "./wireguard/Device.ts"
 import { VirtualTun } from "./net/VirtualTun.ts"
 import type { StreamPair } from "./net/Bridge.ts"
@@ -13,9 +13,9 @@ import * as UdpProxy from "./proxy/UdpProxy.ts"
 export class Wireproxy {
   #device: Device | null = null
   #vt: VirtualTun | null = null
-  #config: Configuration
+  #config: Config.Configuration
 
-  constructor(config: Configuration) {
+  constructor(config: Config.Configuration) {
     this.#config = config
   }
 
