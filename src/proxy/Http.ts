@@ -11,8 +11,9 @@ import * as NCrypto from "node:crypto"
 import type { StreamPair } from "../net/Bridge.ts"
 import { bridge } from "../net/Bridge.ts"
 
-export interface HttpProxyOptions {
-  bindAddress: string
+export interface Options {
+  host: string
+  port: number
   username?: string
   password?: string
   certFile?: string
@@ -27,160 +28,163 @@ function constantTimeCompare(a: string, b: string): boolean {
   return NCrypto.timingSafeEqual(aBuf, bBuf)
 }
 
-export function startHttpProxy(options: HttpProxyOptions): Promise<void> {
-  const { bindAddress, username, password, certFile, keyFile, dial } = options
-  const requireAuth = !!username || !!password
+export async function serve(options: Options) {
+  const requireAuth = !!options.username || !!options.password
 
-  return new Promise((resolve, reject) => {
-    const handler = (client: NNet.Socket) => {
-      handleConnection(client).catch(() => client.destroy())
+  const handler = (client: NNet.Socket) => {
+    handleConnection(client).catch(() => client.destroy())
+  }
+
+  let server: NNet.Server
+  if (options.certFile && options.keyFile) {
+    const cert = NFs.readFileSync(options.certFile)
+    const key = NFs.readFileSync(options.keyFile)
+    server = NTls.createServer({ cert, key }, handler) as unknown as NNet.Server
+  } else {
+    server = NNet.createServer(handler)
+  }
+
+  async function handleConnection(client: NNet.Socket) {
+    // Read the HTTP request line and headers
+    const headerData = await readHttpHeaders(client)
+    if (!headerData) {
+      client.destroy()
+      return
     }
 
-    let server: NNet.Server
-    if (certFile && keyFile) {
-      const cert = NFs.readFileSync(certFile)
-      const key = NFs.readFileSync(keyFile)
-      server = NTls.createServer({ cert, key }, handler) as unknown as NNet.Server
+    const { method, host, headers, rawFirstLine } = headerData
+
+    // Authenticate
+    if (requireAuth) {
+      const authHeader = headers["proxy-authorization"] || ""
+      const encoded = authHeader.replace(/^Basic\s+/i, "")
+      let decoded: string
+      try {
+        decoded = Buffer.from(encoded, "base64").toString()
+      } catch {
+        sendResponse(client, 407, "Proxy Authentication Required", {
+          "Proxy-Authenticate": 'Basic realm="Proxy"',
+        })
+        client.destroy()
+        return
+      }
+
+      const [u, p] = decoded.split(":", 2)
+      const validUser = constantTimeCompare(u ?? "", options.username ?? "")
+      const validPass = constantTimeCompare(p ?? "", options.password ?? "")
+      if (!validUser || !validPass) {
+        sendResponse(client, 407, "Proxy Authentication Required", {
+          "Proxy-Authenticate": 'Basic realm="Proxy"',
+        })
+        client.destroy()
+        return
+      }
+    }
+
+    if (method === "CONNECT") {
+      await handleConnect(client, host)
+    } else if (
+      method === "GET" ||
+      method === "POST" ||
+      method === "PUT" ||
+      method === "DELETE" ||
+      method === "HEAD" ||
+      method === "OPTIONS" ||
+      method === "PATCH"
+    ) {
+      await handleHttp(client, host, rawFirstLine, headers)
     } else {
-      server = NNet.createServer(handler)
+      sendResponse(client, 405, "Method Not Allowed")
+      client.destroy()
+    }
+  }
+
+  async function handleConnect(client: NNet.Socket, hostPort: string) {
+    const { host, port } = parseHostPort(hostPort, 443)
+
+    let remote: StreamPair
+    try {
+      remote = await options.dial(host, port)
+    } catch {
+      sendResponse(client, 502, "Bad Gateway")
+      client.destroy()
+      return
     }
 
-    async function handleConnection(client: NNet.Socket) {
-      // Read the HTTP request line and headers
-      const headerData = await readHttpHeaders(client)
-      if (!headerData) {
-        client.destroy()
-        return
-      }
+    client.write("HTTP/1.1 200 Connection established\r\n\r\n")
 
-      const { method, host, headers, rawFirstLine } = headerData
+    bridge(client, remote)
+  }
 
-      // Authenticate
-      if (requireAuth) {
-        const authHeader = headers["proxy-authorization"] || ""
-        const encoded = authHeader.replace(/^Basic\s+/i, "")
-        let decoded: string
-        try {
-          decoded = Buffer.from(encoded, "base64").toString()
-        } catch {
-          sendResponse(client, 407, "Proxy Authentication Required", {
-            "Proxy-Authenticate": 'Basic realm="Proxy"',
-          })
-          client.destroy()
-          return
-        }
+  async function handleHttp(
+    client: NNet.Socket,
+    hostPort: string,
+    firstLine: string,
+    headers: Record<string, string>,
+  ) {
+    const { host, port } = parseHostPort(hostPort, 80)
 
-        const [u, p] = decoded.split(":", 2)
-        const validUser = constantTimeCompare(u ?? "", username ?? "")
-        const validPass = constantTimeCompare(p ?? "", password ?? "")
-        if (!validUser || !validPass) {
-          sendResponse(client, 407, "Proxy Authentication Required", {
-            "Proxy-Authenticate": 'Basic realm="Proxy"',
-          })
-          client.destroy()
-          return
-        }
-      }
-
-      if (method === "CONNECT") {
-        await handleConnect(client, host)
-      } else if (
-        method === "GET" ||
-        method === "POST" ||
-        method === "PUT" ||
-        method === "DELETE" ||
-        method === "HEAD" ||
-        method === "OPTIONS" ||
-        method === "PATCH"
-      ) {
-        await handleHttp(client, host, rawFirstLine, headers)
-      } else {
-        sendResponse(client, 405, "Method Not Allowed")
-        client.destroy()
-      }
+    let remote: StreamPair
+    try {
+      remote = await options.dial(host, port)
+    } catch {
+      sendResponse(client, 502, "Bad Gateway")
+      client.destroy()
+      return
     }
 
-    async function handleConnect(client: NNet.Socket, hostPort: string) {
-      const { host, port } = parseHostPort(hostPort, 443)
-
-      let remote: StreamPair
-      try {
-        remote = await dial(host, port)
-      } catch {
-        sendResponse(client, 502, "Bad Gateway")
-        client.destroy()
-        return
-      }
-
-      client.write("HTTP/1.1 200 Connection established\r\n\r\n")
-
-      bridge(client, remote)
+    // Forward the original request via the writable stream
+    let reqStr = firstLine + "\r\n"
+    for (const [k, v] of Object.entries(headers)) {
+      if (k.toLowerCase() === "proxy-authorization") continue
+      if (k.toLowerCase() === "proxy-connection") continue
+      reqStr += `${k}: ${v}\r\n`
     }
+    reqStr += "\r\n"
 
-    async function handleHttp(
-      client: NNet.Socket,
-      hostPort: string,
-      firstLine: string,
-      headers: Record<string, string>,
-    ) {
-      const { host, port } = parseHostPort(hostPort, 80)
+    const writer = remote.writable.getWriter()
+    await writer.write(new TextEncoder().encode(reqStr))
+    writer.releaseLock()
 
-      let remote: StreamPair
-      try {
-        remote = await dial(host, port)
-      } catch {
-        sendResponse(client, 502, "Bad Gateway")
-        client.destroy()
-        return
-      }
+    bridge(client, remote)
+  }
 
-      // Forward the original request via the writable stream
-      let reqStr = firstLine + "\r\n"
+  function parseHostPort(hp: string, defaultPort: number): { host: string; port: number } {
+    if (hp.includes(":")) {
+      const idx = hp.lastIndexOf(":")
+      return { host: hp.slice(0, idx), port: parseInt(hp.slice(idx + 1), 10) || defaultPort }
+    }
+    return { host: hp, port: defaultPort }
+  }
+
+  function sendResponse(
+    client: NNet.Socket,
+    code: number,
+    status: string,
+    headers?: Record<string, string>,
+  ) {
+    let resp = `HTTP/1.1 ${code} ${status}\r\n`
+    if (headers) {
       for (const [k, v] of Object.entries(headers)) {
-        if (k.toLowerCase() === "proxy-authorization") continue
-        if (k.toLowerCase() === "proxy-connection") continue
-        reqStr += `${k}: ${v}\r\n`
+        resp += `${k}: ${v}\r\n`
       }
-      reqStr += "\r\n"
-
-      const writer = remote.writable.getWriter()
-      await writer.write(new TextEncoder().encode(reqStr))
-      writer.releaseLock()
-
-      bridge(client, remote)
     }
+    resp += `Content-Length: 0\r\n\r\n`
+    client.write(resp)
+  }
 
-    function parseHostPort(hp: string, defaultPort: number): { host: string; port: number } {
-      if (hp.includes(":")) {
-        const idx = hp.lastIndexOf(":")
-        return { host: hp.slice(0, idx), port: parseInt(hp.slice(idx + 1), 10) || defaultPort }
-      }
-      return { host: hp, port: defaultPort }
-    }
-
-    function sendResponse(
-      client: NNet.Socket,
-      code: number,
-      status: string,
-      headers?: Record<string, string>,
-    ) {
-      let resp = `HTTP/1.1 ${code} ${status}\r\n`
-      if (headers) {
-        for (const [k, v] of Object.entries(headers)) {
-          resp += `${k}: ${v}\r\n`
-        }
-      }
-      resp += `Content-Length: 0\r\n\r\n`
-      client.write(resp)
-    }
-
-    const [host, portStr] = bindAddress.split(":")
-    server.listen(parseInt(portStr!, 10), host, () => {
-      console.log(`HTTP proxy listening on ${bindAddress}`)
-      resolve()
-    })
+  await new Promise<void>((resolve, reject) => {
+    server.listen(options.port, options.host, () => resolve())
     server.on("error", reject)
   })
+  console.log(`HTTP proxy listening on ${options.host}:${options.port}`)
+
+  return {
+    stop: () =>
+      new Promise<void>((resolve, reject) => {
+        server.close((err) => (err ? reject(err) : resolve()))
+      }),
+  }
 }
 
 interface HttpHeaderResult {

@@ -2,60 +2,54 @@ import * as NNet from "node:net"
 import type { StreamPair } from "../net/Bridge.ts"
 import { bridge } from "../net/Bridge.ts"
 
-export interface TcpClientTunnelOptions {
-  bindAddress: string
-  target: string
+export interface ClientOptions {
+  host: string
+  port: number
+  targetHost: string
+  targetPort: number
   dial: (host: string, port: number) => Promise<StreamPair>
 }
 
-export interface TcpServerTunnelOptions {
+export interface ServerOptions {
   listenPort: number
-  target: string
+  targetHost: string
+  targetPort: number
   listen: (port: number, cb: (socket: NNet.Socket) => void) => void
 }
 
-function parseHostPort(addr: string): { host: string; port: number } {
-  const idx = addr.lastIndexOf(":")
+export async function serveClient(options: ClientOptions) {
+  const server = NNet.createServer(async (client) => {
+    let remote: StreamPair
+    try {
+      remote = await options.dial(options.targetHost, options.targetPort)
+    } catch (err) {
+      console.error(`TCP Client Tunnel to ${options.targetHost}:${options.targetPort}: ${err}`)
+      client.destroy()
+      return
+    }
+
+    bridge(client, remote)
+  })
+
+  await new Promise<void>((resolve, reject) => {
+    server.listen(options.port, options.host, () => resolve())
+    server.on("error", reject)
+  })
+  console.log(
+    `TCP Client Tunnel: ${options.host}:${options.port} -> ${options.targetHost}:${options.targetPort}`,
+  )
+
   return {
-    host: addr.slice(0, idx),
-    port: parseInt(addr.slice(idx + 1), 10),
+    stop: () =>
+      new Promise<void>((resolve, reject) => {
+        server.close((err) => (err ? reject(err) : resolve()))
+      }),
   }
 }
 
-export function startTcpClientTunnel(options: TcpClientTunnelOptions): Promise<void> {
-  const { bindAddress, target, dial } = options
-  const { host: targetHost, port: targetPort } = parseHostPort(target)
-
-  return new Promise((resolve, reject) => {
-    const { host, port } = parseHostPort(bindAddress)
-
-    const server = NNet.createServer(async (client) => {
-      let remote: StreamPair
-      try {
-        remote = await dial(targetHost, targetPort)
-      } catch (err) {
-        console.error(`TCP Client Tunnel to ${target}: ${err}`)
-        client.destroy()
-        return
-      }
-
-      bridge(client, remote)
-    })
-
-    server.listen(port, host, () => {
-      console.log(`TCP Client Tunnel: ${bindAddress} -> ${target}`)
-      resolve()
-    })
-    server.on("error", reject)
-  })
-}
-
-export function startTcpServerTunnel(options: TcpServerTunnelOptions): void {
-  const { target } = options
-  const { host: targetHost, port: targetPort } = parseHostPort(target)
-
+export function serveServer(options: ServerOptions): void {
   options.listen(options.listenPort, (client) => {
-    const remote = NNet.connect(targetPort, targetHost)
+    const remote = NNet.connect(options.targetPort, options.targetHost)
 
     client.pipe(remote)
     remote.pipe(client)
@@ -65,5 +59,7 @@ export function startTcpServerTunnel(options: TcpServerTunnelOptions): void {
     remote.on("close", () => client.destroy())
   })
 
-  console.log(`TCP Server Tunnel: WG port ${options.listenPort} -> ${target}`)
+  console.log(
+    `TCP Server Tunnel: WG port ${options.listenPort} -> ${options.targetHost}:${options.targetPort}`,
+  )
 }

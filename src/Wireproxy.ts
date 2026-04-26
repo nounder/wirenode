@@ -5,15 +5,17 @@ import * as Config from "./wireguard/Config.ts"
 import { Device } from "./wireguard/Device.ts"
 import { VirtualTun } from "./net/VirtualTun.ts"
 import type { StreamPair } from "./net/Bridge.ts"
+import { parseHostPort } from "./net/HostPort.ts"
 import * as Socks5 from "./proxy/Socks5.ts"
 import * as Http from "./proxy/Http.ts"
 import * as TcpTunnel from "./proxy/TcpTunnel.ts"
-import * as UdpProxy from "./proxy/UdpProxy.ts"
+import * as UdpProxyTunnel from "./proxy/UdpProxyTunnel.ts"
 
 export class Wireproxy {
   #device: Device | null = null
   #vt: VirtualTun | null = null
   #config: Config.Configuration
+  #handles: { stop: () => Promise<void> }[] = []
 
   constructor(config: Config.Configuration) {
     this.#config = config
@@ -62,25 +64,30 @@ export class Wireproxy {
     }
 
     // Start all configured routines
-    const promises: Promise<void>[] = []
+    const promises: Promise<{ stop: () => Promise<void> }>[] = []
 
     for (const routine of conf.routines) {
       switch (routine.type) {
-        case "socks5":
+        case "socks5": {
+          const bind = parseHostPort(routine.bindAddress)
           promises.push(
-            Socks5.startSocks5({
-              bindAddress: routine.bindAddress,
+            Socks5.serve({
+              host: bind.host,
+              port: bind.port,
               username: routine.username || undefined,
               password: routine.password || undefined,
               dial,
             }),
           )
           break
+        }
 
-        case "http":
+        case "http": {
+          const bind = parseHostPort(routine.bindAddress)
           promises.push(
-            Http.startHttpProxy({
-              bindAddress: routine.bindAddress,
+            Http.serve({
+              host: bind.host,
+              port: bind.port,
               username: routine.username || undefined,
               password: routine.password || undefined,
               certFile: routine.certFile || undefined,
@@ -89,27 +96,38 @@ export class Wireproxy {
             }),
           )
           break
+        }
 
-        case "tcpClient":
+        case "tcpClient": {
+          const bind = parseHostPort(routine.bindAddress)
+          const target = parseHostPort(routine.target)
           promises.push(
-            TcpTunnel.startTcpClientTunnel({
-              bindAddress: routine.bindAddress,
-              target: routine.target,
+            TcpTunnel.serveClient({
+              host: bind.host,
+              port: bind.port,
+              targetHost: target.host,
+              targetPort: target.port,
               dial,
             }),
           )
           break
+        }
 
-        case "udp":
+        case "udp": {
+          const bind = parseHostPort(routine.bindAddress)
+          const target = parseHostPort(routine.target)
           promises.push(
-            UdpProxy.startUdpProxy({
-              bindAddress: routine.bindAddress,
-              target: routine.target,
+            UdpProxyTunnel.serve({
+              host: bind.host,
+              port: bind.port,
+              targetHost: target.host,
+              targetPort: target.port,
               inactivityTimeout: routine.inactivityTimeout,
-              dial: (target) => this.#vt!.dialUdp(target),
+              dial: (t) => this.#vt!.dialUdp(t),
             }),
           )
           break
+        }
 
         case "stdio":
           console.log(`STDIO tunnel to ${routine.target} — not yet implemented`)
@@ -123,10 +141,12 @@ export class Wireproxy {
       }
     }
 
-    await Promise.all(promises)
+    this.#handles = await Promise.all(promises)
   }
 
   async stop(): Promise<void> {
+    await Promise.all(this.#handles.map((h) => h.stop()))
+    this.#handles = []
     if (this.#device) {
       await this.#device.down()
       this.#device = null

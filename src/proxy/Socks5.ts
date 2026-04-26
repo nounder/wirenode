@@ -8,8 +8,9 @@ import * as NCrypto from "node:crypto"
 import type { StreamPair } from "../net/Bridge.ts"
 import { bridge } from "../net/Bridge.ts"
 
-export interface Socks5Options {
-  bindAddress: string
+export interface Options {
+  host: string
+  port: number
   username?: string
   password?: string
   dial: (host: string, port: number) => Promise<StreamPair>
@@ -77,158 +78,161 @@ function constantTimeCompare(a: string, b: string): boolean {
   return NCrypto.timingSafeEqual(aBuf, bBuf)
 }
 
-export function startSocks5(options: Socks5Options): Promise<void> {
-  const { bindAddress, username, password, dial } = options
-  const requireAuth = !!username
+export async function serve(options: Options) {
+  const requireAuth = !!options.username
 
-  return new Promise((resolve, reject) => {
-    const server = NNet.createServer(async (client) => {
-      try {
-        await handleClient(client)
-      } catch {
-        client.destroy()
-      }
-    })
+  const server = NNet.createServer(async (client) => {
+    try {
+      await handleClient(client)
+    } catch {
+      client.destroy()
+    }
+  })
 
-    async function handleClient(client: NNet.Socket) {
-      // Read greeting
-      const greeting = await readExact(client, 2)
-      if (greeting[0] !== SOCKS_VERSION) {
-        client.destroy()
-        return
-      }
-
-      const nMethods = greeting[1]!
-      const methods = await readExact(client, nMethods)
-
-      // Select auth method
-      if (requireAuth) {
-        if (!methods.includes(AUTH_USERPASS)) {
-          client.write(Buffer.from([SOCKS_VERSION, AUTH_NO_ACCEPTABLE]))
-          client.destroy()
-          return
-        }
-        client.write(Buffer.from([SOCKS_VERSION, AUTH_USERPASS]))
-
-        // Username/password auth (RFC 1929)
-        const authVer = await readExact(client, 1)
-        if (authVer[0] !== 0x01) {
-          client.destroy()
-          return
-        }
-
-        const ulenBuf = await readExact(client, 1)
-        const uname = await readExact(client, ulenBuf[0]!)
-        const plenBuf = await readExact(client, 1)
-        const passwd = await readExact(client, plenBuf[0]!)
-
-        const validUser = constantTimeCompare(uname.toString(), username!)
-        const validPass = constantTimeCompare(passwd.toString(), password ?? "")
-
-        if (!validUser || !validPass) {
-          client.write(Buffer.from([0x01, 0x01])) // auth failure
-          client.destroy()
-          return
-        }
-        client.write(Buffer.from([0x01, 0x00])) // auth success
-      } else {
-        if (!methods.includes(AUTH_NONE)) {
-          client.write(Buffer.from([SOCKS_VERSION, AUTH_NO_ACCEPTABLE]))
-          client.destroy()
-          return
-        }
-        client.write(Buffer.from([SOCKS_VERSION, AUTH_NONE]))
-      }
-
-      // Read request
-      const reqHeader = await readExact(client, 4)
-      if (reqHeader[0] !== SOCKS_VERSION) {
-        client.destroy()
-        return
-      }
-
-      const cmd = reqHeader[1]!
-      // reqHeader[2] is reserved
-      const atyp = reqHeader[3]!
-
-      if (cmd !== CMD_CONNECT) {
-        sendReply(client, REP_COMMAND_NOT_SUPPORTED, "0.0.0.0", 0)
-        client.destroy()
-        return
-      }
-
-      let host: string
-      let port: number
-
-      switch (atyp) {
-        case ATYP_IPV4: {
-          const addr = await readExact(client, 4)
-          host = `${addr[0]}.${addr[1]}.${addr[2]}.${addr[3]}`
-          const portBuf = await readExact(client, 2)
-          port = portBuf.readUInt16BE(0)
-          break
-        }
-        case ATYP_DOMAIN: {
-          const lenBuf = await readExact(client, 1)
-          const domain = await readExact(client, lenBuf[0]!)
-          host = domain.toString()
-          const portBuf = await readExact(client, 2)
-          port = portBuf.readUInt16BE(0)
-          break
-        }
-        case ATYP_IPV6: {
-          const addr = await readExact(client, 16)
-          const parts: string[] = []
-          for (let i = 0; i < 16; i += 2) {
-            parts.push(addr.readUInt16BE(i).toString(16))
-          }
-          host = parts.join(":")
-          const portBuf = await readExact(client, 2)
-          port = portBuf.readUInt16BE(0)
-          break
-        }
-        default:
-          sendReply(client, REP_ADDR_TYPE_NOT_SUPPORTED, "0.0.0.0", 0)
-          client.destroy()
-          return
-      }
-
-      // Connect through WireGuard tunnel
-      let remote: StreamPair
-      try {
-        remote = await dial(host, port)
-      } catch {
-        sendReply(client, REP_HOST_UNREACHABLE, "0.0.0.0", 0)
-        client.destroy()
-        return
-      }
-
-      sendReply(client, REP_SUCCESS, "0.0.0.0", 0)
-
-      // Bidirectional bridge: Node Socket ↔ web streams
-      bridge(client, remote)
+  async function handleClient(client: NNet.Socket) {
+    // Read greeting
+    const greeting = await readExact(client, 2)
+    if (greeting[0] !== SOCKS_VERSION) {
+      client.destroy()
+      return
     }
 
-    function sendReply(client: NNet.Socket, rep: number, bindAddr: string, bindPort: number) {
-      const parts = bindAddr.split(".").map(Number)
-      const reply = Buffer.alloc(10)
-      reply[0] = SOCKS_VERSION
-      reply[1] = rep
-      reply[2] = 0x00 // reserved
-      reply[3] = ATYP_IPV4
-      reply[4] = parts[0]!
-      reply[5] = parts[1]!
-      reply[6] = parts[2]!
-      reply[7] = parts[3]!
-      reply.writeUInt16BE(bindPort, 8)
-      client.write(reply)
+    const nMethods = greeting[1]!
+    const methods = await readExact(client, nMethods)
+
+    // Select auth method
+    if (requireAuth) {
+      if (!methods.includes(AUTH_USERPASS)) {
+        client.write(Buffer.from([SOCKS_VERSION, AUTH_NO_ACCEPTABLE]))
+        client.destroy()
+        return
+      }
+      client.write(Buffer.from([SOCKS_VERSION, AUTH_USERPASS]))
+
+      // Username/password auth (RFC 1929)
+      const authVer = await readExact(client, 1)
+      if (authVer[0] !== 0x01) {
+        client.destroy()
+        return
+      }
+
+      const ulenBuf = await readExact(client, 1)
+      const uname = await readExact(client, ulenBuf[0]!)
+      const plenBuf = await readExact(client, 1)
+      const passwd = await readExact(client, plenBuf[0]!)
+
+      const validUser = constantTimeCompare(uname.toString(), options.username!)
+      const validPass = constantTimeCompare(passwd.toString(), options.password ?? "")
+
+      if (!validUser || !validPass) {
+        client.write(Buffer.from([0x01, 0x01])) // auth failure
+        client.destroy()
+        return
+      }
+      client.write(Buffer.from([0x01, 0x00])) // auth success
+    } else {
+      if (!methods.includes(AUTH_NONE)) {
+        client.write(Buffer.from([SOCKS_VERSION, AUTH_NO_ACCEPTABLE]))
+        client.destroy()
+        return
+      }
+      client.write(Buffer.from([SOCKS_VERSION, AUTH_NONE]))
     }
 
-    const [host, portStr] = bindAddress.split(":")
-    server.listen(parseInt(portStr!, 10), host, () => {
-      console.log(`SOCKS5 proxy listening on ${bindAddress}`)
-      resolve()
-    })
+    // Read request
+    const reqHeader = await readExact(client, 4)
+    if (reqHeader[0] !== SOCKS_VERSION) {
+      client.destroy()
+      return
+    }
+
+    const cmd = reqHeader[1]!
+    // reqHeader[2] is reserved
+    const atyp = reqHeader[3]!
+
+    if (cmd !== CMD_CONNECT) {
+      sendReply(client, REP_COMMAND_NOT_SUPPORTED, "0.0.0.0", 0)
+      client.destroy()
+      return
+    }
+
+    let host: string
+    let port: number
+
+    switch (atyp) {
+      case ATYP_IPV4: {
+        const addr = await readExact(client, 4)
+        host = `${addr[0]}.${addr[1]}.${addr[2]}.${addr[3]}`
+        const portBuf = await readExact(client, 2)
+        port = portBuf.readUInt16BE(0)
+        break
+      }
+      case ATYP_DOMAIN: {
+        const lenBuf = await readExact(client, 1)
+        const domain = await readExact(client, lenBuf[0]!)
+        host = domain.toString()
+        const portBuf = await readExact(client, 2)
+        port = portBuf.readUInt16BE(0)
+        break
+      }
+      case ATYP_IPV6: {
+        const addr = await readExact(client, 16)
+        const parts: string[] = []
+        for (let i = 0; i < 16; i += 2) {
+          parts.push(addr.readUInt16BE(i).toString(16))
+        }
+        host = parts.join(":")
+        const portBuf = await readExact(client, 2)
+        port = portBuf.readUInt16BE(0)
+        break
+      }
+      default:
+        sendReply(client, REP_ADDR_TYPE_NOT_SUPPORTED, "0.0.0.0", 0)
+        client.destroy()
+        return
+    }
+
+    // Connect through WireGuard tunnel
+    let remote: StreamPair
+    try {
+      remote = await options.dial(host, port)
+    } catch {
+      sendReply(client, REP_HOST_UNREACHABLE, "0.0.0.0", 0)
+      client.destroy()
+      return
+    }
+
+    sendReply(client, REP_SUCCESS, "0.0.0.0", 0)
+
+    // Bidirectional bridge: Node Socket ↔ web streams
+    bridge(client, remote)
+  }
+
+  function sendReply(client: NNet.Socket, rep: number, bindAddr: string, bindPort: number) {
+    const parts = bindAddr.split(".").map(Number)
+    const reply = Buffer.alloc(10)
+    reply[0] = SOCKS_VERSION
+    reply[1] = rep
+    reply[2] = 0x00 // reserved
+    reply[3] = ATYP_IPV4
+    reply[4] = parts[0]!
+    reply[5] = parts[1]!
+    reply[6] = parts[2]!
+    reply[7] = parts[3]!
+    reply.writeUInt16BE(bindPort, 8)
+    client.write(reply)
+  }
+
+  await new Promise<void>((resolve, reject) => {
+    server.listen(options.port, options.host, () => resolve())
     server.on("error", reject)
   })
+  console.log(`SOCKS5 proxy listening on ${options.host}:${options.port}`)
+
+  return {
+    stop: () =>
+      new Promise<void>((resolve, reject) => {
+        server.close((err) => (err ? reject(err) : resolve()))
+      }),
+  }
 }
