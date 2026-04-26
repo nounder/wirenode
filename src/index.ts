@@ -3,25 +3,24 @@
  * wireproxy — WireGuard userspace client with SOCKS5/HTTP proxy support.
  * Compatible with pufferffish/wireproxy configuration format.
  */
-import { Wireproxy } from "./Wireproxy.ts"
 import * as Config from "./wireguard/Config.ts"
+import * as Wireproxy from "./Wireproxy.ts"
+import * as Device from "./wireguard/Device.ts"
 
-export { Wireproxy }
 export * as Config from "./wireguard/Config.ts"
-export { Device } from "./wireguard/Device.ts"
-export { Peer } from "./wireguard/Peer.ts"
-export type { DeviceConfig } from "./wireguard/Device.ts"
-export type { PeerConfig } from "./wireguard/Peer.ts"
-export { VirtualTun } from "./net/VirtualTun.ts"
+export * as Peer from "./wireguard/Peer.ts"
+export * as Device from "./wireguard/Device.ts"
+export * as VirtualTun from "./net/VirtualTun.ts"
+export * as Wireproxy from "./Wireproxy.ts"
 export * as Http from "./proxy/Http.ts"
 export * as Socks5 from "./proxy/Socks5.ts"
 export * as TcpTunnel from "./proxy/TcpTunnel.ts"
 export * as UdpTunnel from "./proxy/UdpTunnel.ts"
+export * as Result from "./Result.ts"
 
 if (import.meta.main) {
   const args = process.argv.slice(2)
 
-  // Parse flags
   let configPath = ""
   let configTest = false
   let silent = false
@@ -140,7 +139,6 @@ Options:
   }
 
   if (daemon) {
-    // Fork to background using Bun.spawn
     const child = Bun.spawn(
       ["bun", "run", import.meta.path, "-c", configPath, "-s"],
       {
@@ -158,9 +156,13 @@ Options:
     console.error = () => {}
   }
 
-  const wp = new Wireproxy(config)
+  const wpResult = await Wireproxy.open(config)
+  if (!wpResult.ok) {
+    console.error(`Failed to start: ${wpResult.error.message}`)
+    process.exit(1)
+  }
+  const wp = wpResult.value
 
-  // Health/status endpoint
   if (infoAddress) {
     const [host, portStr] = infoAddress.split(":")
     const port = parseInt(portStr!, 10)
@@ -168,10 +170,9 @@ Options:
       hostname: host,
       port,
       fetch() {
-        const device = wp.getDevice()
-        const peers = device?.getPeers() ?? []
+        const peers = Device.getPeers(wp.device)
         const status = {
-          running: !!device,
+          running: true,
           peers: peers.map((p) => ({
             publicKey: p.publicKeyHex.slice(0, 16) + "...",
             endpoint: p.endpoint,
@@ -188,21 +189,14 @@ Options:
 
   process.on("SIGINT", async () => {
     if (!silent) console.log("\nShutting down...")
-    await wp.stop()
+    await Wireproxy.close(wp)
     process.exit(0)
   })
 
   process.on("SIGTERM", async () => {
-    await wp.stop()
+    await Wireproxy.close(wp)
     process.exit(0)
   })
-
-  try {
-    await wp.start()
-  } catch (err: unknown) {
-    console.error(`Failed to start: ${err instanceof Error ? err.message : err}`)
-    process.exit(1)
-  }
 }
 
 function applyOverrides(
@@ -232,7 +226,7 @@ function applyOverrides(
   return { ok: true }
 }
 
-function validateCliConfig(config: Config.Configuration): { ok: true } | { ok: false; error: string } {
+function validateCliConfig(config: Config.Config): { ok: true } | { ok: false; error: string } {
   const runnable = config.routines.filter(
     (routine) =>
       routine.type === "socks5" ||

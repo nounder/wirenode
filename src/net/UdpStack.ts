@@ -2,12 +2,17 @@
  * Minimal IPv4 UDP session layer for outbound datagrams over WireGuard.
  */
 import * as NEvents from "node:events"
-import type { Device } from "../wireguard/Device.ts"
-import type { Peer } from "../wireguard/Peer.ts"
+import type * as Peer from "../wireguard/Peer.ts"
+import type * as TypedEmitter from "../util/TypedEmitter.ts"
+import * as IPv4 from "./IPv4.ts"
 
-const IpVersion = 4
-const Ipv4HeaderLen = 20
-const IpTtl = 64
+export { IPv4 }
+
+export interface PacketTransport {
+  events: TypedEmitter.TypedEmitter<{ packet: [data: Uint8Array, peer: Peer.Peer] }>
+  sendPacket(peer: Peer.Peer, data: Uint8Array): void
+}
+
 const UdpHeaderLen = 8
 
 export const IpProtocol = {
@@ -22,103 +27,6 @@ function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
   return true
 }
 
-export function ipChecksum(data: Uint8Array): number {
-  let sum = 0
-  const view = new DataView(data.buffer, data.byteOffset, data.byteLength)
-  for (let i = 0; i < data.length - 1; i += 2) {
-    sum += view.getUint16(i, false)
-  }
-  if (data.length & 1) {
-    sum += data[data.length - 1]! << 8
-  }
-  while (sum >> 16) {
-    sum = (sum & 0xffff) + (sum >> 16)
-  }
-  return (~sum) & 0xffff
-}
-
-function parseIpv4Address(address: string): Uint8Array {
-  const parts = address.split(".")
-  if (parts.length !== 4) throw new Error(`invalid IPv4 address: ${address}`)
-
-  const parsed = new Uint8Array(4)
-  for (let i = 0; i < 4; i++) {
-    const part = Number(parts[i])
-    if (!Number.isInteger(part) || part < 0 || part > 255) {
-      throw new Error(`invalid IPv4 address: ${address}`)
-    }
-    parsed[i] = part
-  }
-  return parsed
-}
-
-function formatIpv4Address(address: Uint8Array): string {
-  return `${address[0]}.${address[1]}.${address[2]}.${address[3]}`
-}
-
-function buildIpv4Packet(
-  src: Uint8Array,
-  dst: Uint8Array,
-  protocol: number,
-  payload: Uint8Array,
-  id: number,
-): Uint8Array {
-  const totalLength = Ipv4HeaderLen + payload.length
-  const packet = new Uint8Array(totalLength)
-  const view = new DataView(packet.buffer)
-
-  packet[0] = (IpVersion << 4) | (Ipv4HeaderLen >> 2)
-  packet[1] = 0
-  view.setUint16(2, totalLength, false)
-  view.setUint16(4, id & 0xffff, false)
-  view.setUint16(6, 0x4000, false)
-  packet[8] = IpTtl
-  packet[9] = protocol
-  packet.set(src, 12)
-  packet.set(dst, 16)
-
-  view.setUint16(10, 0, false)
-  view.setUint16(10, ipChecksum(packet.subarray(0, Ipv4HeaderLen)), false)
-  packet.set(payload, Ipv4HeaderLen)
-  return packet
-}
-
-export interface Ipv4Packet {
-  src: Uint8Array
-  dst: Uint8Array
-  protocol: number
-  payload: Uint8Array
-  totalLength: number
-}
-
-function parseIpv4Packet(packet: Uint8Array): Ipv4Packet | null {
-  if (packet.length < Ipv4HeaderLen) return null
-  const version = (packet[0]! >> 4) & 0xf
-  if (version !== 4) return null
-
-  const ihl = (packet[0]! & 0xf) * 4
-  if (ihl < Ipv4HeaderLen || packet.length < ihl) return null
-
-  const view = new DataView(packet.buffer, packet.byteOffset, packet.byteLength)
-  const totalLength = view.getUint16(2, false)
-  if (totalLength < ihl || totalLength > packet.length) return null
-
-  return {
-    src: new Uint8Array(packet.subarray(12, 16)),
-    dst: new Uint8Array(packet.subarray(16, 20)),
-    protocol: packet[9]!,
-    payload: packet.subarray(ihl, totalLength),
-    totalLength,
-  }
-}
-
-export const IPv4 = {
-  parse: parseIpv4Address,
-  format: formatIpv4Address,
-  buildPacket: buildIpv4Packet,
-  parsePacket: parseIpv4Packet,
-} as const
-
 function udpChecksum(srcIp: Uint8Array, dstIp: Uint8Array, segment: Uint8Array): number {
   const pseudoLen = 12 + segment.length
   const pseudo = new Uint8Array(pseudoLen + (pseudoLen & 1))
@@ -129,8 +37,8 @@ function udpChecksum(srcIp: Uint8Array, dstIp: Uint8Array, segment: Uint8Array):
   new DataView(pseudo.buffer).setUint16(10, segment.length, false)
   pseudo.set(segment, 12)
 
-  const checksum = ipChecksum(pseudo)
-  return checksum === 0 ? 0xffff : checksum
+  const sum = IPv4.checksum(pseudo)
+  return sum === 0 ? 0xffff : sum
 }
 
 export function buildUdpSegment(
@@ -195,8 +103,8 @@ export class UdpSession extends NEvents.EventEmitter {
   #remoteIp: Uint8Array
   #localPort: number
   #remotePort: number
-  #peer: Peer
-  #device: Device
+  #peer: Peer.Peer
+  #device: PacketTransport
   #ipId = 1
   #closed = false
   #onClose: (() => void) | null = null
@@ -206,8 +114,8 @@ export class UdpSession extends NEvents.EventEmitter {
     remoteIp: Uint8Array,
     localPort: number,
     remotePort: number,
-    peer: Peer,
-    device: Device,
+    peer: Peer.Peer,
+    device: PacketTransport,
   ) {
     super()
     this.#localIp = localIp
@@ -277,19 +185,19 @@ export class UdpSession extends NEvents.EventEmitter {
 }
 
 export class UdpStack {
-  #device: Device
+  #device: PacketTransport
   #localIp: Uint8Array
   #sessions: Map<string, UdpSession> = new Map()
-  #packetHandler: (data: Uint8Array, peer: Peer) => void
+  #packetHandler: (data: Uint8Array, peer: Peer.Peer) => void
 
-  constructor(device: Device, localIp: string) {
+  constructor(device: PacketTransport, localIp: string) {
     this.#device = device
     this.#localIp = IPv4.parse(localIp)
-    this.#packetHandler = (data: Uint8Array, _peer: Peer) => this.#handleIpPacket(data)
-    this.#device.on("packet", this.#packetHandler)
+    this.#packetHandler = (data: Uint8Array, _peer: Peer.Peer) => this.#handleIpPacket(data)
+    this.#device.events.on("packet", this.#packetHandler)
   }
 
-  connect(host: string, port: number, peer: Peer): UdpSession {
+  connect(host: string, port: number, peer: Peer.Peer): UdpSession {
     const remoteIp = IPv4.parse(host)
     const localPort = allocatePort()
     const session = new UdpSession(this.#localIp, remoteIp, localPort, port, peer, this.#device)
@@ -318,7 +226,7 @@ export class UdpStack {
   }
 
   destroy(): void {
-    this.#device.off("packet", this.#packetHandler)
+    this.#device.events.off("packet", this.#packetHandler)
     for (const session of this.#sessions.values()) {
       session.close()
     }

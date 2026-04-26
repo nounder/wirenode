@@ -3,8 +3,8 @@
  * Handles handshake state, keypair rotation, and timers.
  */
 
-import * as NEvents from "node:events"
 import * as Handshake from "../noise/Handshake.ts"
+import * as TypedEmitter from "../util/TypedEmitter.ts"
 
 export interface PeerConfig {
   publicKey: Uint8Array
@@ -14,7 +14,14 @@ export interface PeerConfig {
   allowedIPs: string[] // CIDR strings
 }
 
-export class Peer extends NEvents.EventEmitter {
+export type PeerEvents = {
+  keypairReady: []
+  sendKeepalive: []
+}
+
+export interface Peer {
+  events: TypedEmitter.TypedEmitter<PeerEvents>
+
   readonly publicKey: Uint8Array
   readonly publicKeyHex: string
   endpoint: string | null
@@ -22,115 +29,125 @@ export class Peer extends NEvents.EventEmitter {
   allowedIPs: string[]
 
   handshake: Handshake.HandshakeContext
-  currentKeypair: Handshake.Keypair | null = null
-  previousKeypair: Handshake.Keypair | null = null
-  nextKeypair: Handshake.Keypair | null = null
+  currentKeypair: Handshake.Keypair | null
+  previousKeypair: Handshake.Keypair | null
+  nextKeypair: Handshake.Keypair | null
 
-  // Queued packets waiting for a keypair
-  stagedPackets: Uint8Array[] = []
+  stagedPackets: Uint8Array[]
 
-  // Timers
-  #keepaliveTimer: ReturnType<typeof setTimeout> | null = null
-  #handshakeTimer: ReturnType<typeof setTimeout> | null = null
-  #rekeyTimer: ReturnType<typeof setTimeout> | null = null
-  #zeroKeyTimer: ReturnType<typeof setTimeout> | null = null
+  keepaliveTimer: ReturnType<typeof setTimeout> | null
+  handshakeTimer: ReturnType<typeof setTimeout> | null
+  rekeyTimer: ReturnType<typeof setTimeout> | null
+  zeroKeyTimer: ReturnType<typeof setTimeout> | null
 
-  lastHandshakeAttempt: number = 0
-  lastSentPacket: number = 0
-  lastReceivedPacket: number = 0
+  lastHandshakeAttempt: number
+  lastSentPacket: number
+  lastReceivedPacket: number
+}
 
-  constructor(config: PeerConfig, localStaticPrivate: Uint8Array) {
-    super()
-    this.publicKey = config.publicKey
-    this.publicKeyHex = Buffer.from(config.publicKey).toString("hex")
-    this.endpoint = config.endpoint ?? null
-    this.persistentKeepalive = config.persistentKeepalive
-    this.allowedIPs = config.allowedIPs
-    this.handshake = Handshake.createHandshake(
+export function make(config: PeerConfig, localStaticPrivate: Uint8Array): Peer {
+  return {
+    events: TypedEmitter.make<PeerEvents>(),
+    publicKey: config.publicKey,
+    publicKeyHex: Buffer.from(config.publicKey).toString("hex"),
+    endpoint: config.endpoint ?? null,
+    persistentKeepalive: config.persistentKeepalive,
+    allowedIPs: config.allowedIPs,
+    handshake: Handshake.createHandshake(
       config.publicKey,
       config.presharedKey,
       localStaticPrivate,
-    )
+    ),
+    currentKeypair: null,
+    previousKeypair: null,
+    nextKeypair: null,
+    stagedPackets: [],
+    keepaliveTimer: null,
+    handshakeTimer: null,
+    rekeyTimer: null,
+    zeroKeyTimer: null,
+    lastHandshakeAttempt: 0,
+    lastSentPacket: 0,
+    lastReceivedPacket: 0,
   }
+}
 
-  activateKeypair(): void {
-    const keypair = Handshake.beginSymmetricSession(this.handshake)
+export function activateKeypair(self: Peer): void {
+  const keypair = Handshake.beginSymmetricSession(self.handshake)
 
-    if (keypair.isInitiator) {
-      if (this.nextKeypair) {
-        this.previousKeypair = this.nextKeypair
-        this.nextKeypair = null
-      } else {
-        this.previousKeypair = this.currentKeypair
-      }
-      this.currentKeypair = keypair
+  if (keypair.isInitiator) {
+    if (self.nextKeypair) {
+      self.previousKeypair = self.nextKeypair
+      self.nextKeypair = null
     } else {
-      this.nextKeypair = keypair
-      this.previousKeypair = null
+      self.previousKeypair = self.currentKeypair
     }
-
-    // Flush staged packets
-    this.emit("keypairReady")
+    self.currentKeypair = keypair
+  } else {
+    self.nextKeypair = keypair
+    self.previousKeypair = null
   }
 
-  receivedWithKeypair(keypair: Handshake.Keypair): boolean {
-    if (this.nextKeypair !== keypair) return false
-    this.previousKeypair = this.currentKeypair
-    this.currentKeypair = this.nextKeypair
-    this.nextKeypair = null
-    return true
-  }
+  self.events.emit("keypairReady")
+}
 
-  needsRekey(): boolean {
-    const kp = this.currentKeypair
-    if (!kp) return true
-    if (!kp.isInitiator) return false
-    if (Date.now() - kp.created > Handshake.RekeyAfterTime) return true
-    if (kp.sendNonce > Handshake.RekeyAfterMessages) return true
-    return false
-  }
+export function receivedWithKeypair(self: Peer, keypair: Handshake.Keypair): boolean {
+  if (self.nextKeypair !== keypair) return false
+  self.previousKeypair = self.currentKeypair
+  self.currentKeypair = self.nextKeypair
+  self.nextKeypair = null
+  return true
+}
 
-  isKeypairExpired(kp: Handshake.Keypair | null): boolean {
-    if (!kp) return true
-    return Date.now() - kp.created > Handshake.RejectAfterTime
-  }
+export function needsRekey(self: Peer): boolean {
+  const kp = self.currentKeypair
+  if (!kp) return true
+  if (!kp.isInitiator) return false
+  if (Date.now() - kp.created > Handshake.RekeyAfterTime) return true
+  if (kp.sendNonce > Handshake.RekeyAfterMessages) return true
+  return false
+}
 
-  getSendKeypair(): Handshake.Keypair | null {
-    const kp = this.currentKeypair
-    if (!kp) return null
-    if (this.isKeypairExpired(kp)) return null
-    if (kp.sendNonce >= Handshake.RejectAfterMessages) return null
-    return kp
-  }
+export function isKeypairExpired(_self: Peer, kp: Handshake.Keypair | null): boolean {
+  if (!kp) return true
+  return Date.now() - kp.created > Handshake.RejectAfterTime
+}
 
-  findKeypairByIndex(index: number): Handshake.Keypair | null {
-    if (this.currentKeypair?.localIndex === index) return this.currentKeypair
-    if (this.previousKeypair?.localIndex === index) return this.previousKeypair
-    if (this.nextKeypair?.localIndex === index) return this.nextKeypair
-    return null
-  }
+export function getSendKeypair(self: Peer): Handshake.Keypair | null {
+  const kp = self.currentKeypair
+  if (!kp) return null
+  if (isKeypairExpired(self, kp)) return null
+  if (kp.sendNonce >= Handshake.RejectAfterMessages) return null
+  return kp
+}
 
-  startKeepalive(): void {
-    this.stopKeepalive()
-    if (this.persistentKeepalive > 0) {
-      this.#keepaliveTimer = setInterval(() => {
-        this.emit("sendKeepalive")
-      }, this.persistentKeepalive * 1000)
-    }
-  }
+export function findKeypairByIndex(self: Peer, index: number): Handshake.Keypair | null {
+  if (self.currentKeypair?.localIndex === index) return self.currentKeypair
+  if (self.previousKeypair?.localIndex === index) return self.previousKeypair
+  if (self.nextKeypair?.localIndex === index) return self.nextKeypair
+  return null
+}
 
-  stopKeepalive(): void {
-    if (this.#keepaliveTimer) {
-      clearInterval(this.#keepaliveTimer)
-      this.#keepaliveTimer = null
-    }
+export function startKeepalive(self: Peer): void {
+  stopKeepalive(self)
+  if (self.persistentKeepalive > 0) {
+    self.keepaliveTimer = setInterval(() => {
+      self.events.emit("sendKeepalive")
+    }, self.persistentKeepalive * 1000)
   }
+}
 
-  destroy(): void {
-    this.stopKeepalive()
-    if (this.#handshakeTimer) clearTimeout(this.#handshakeTimer)
-    if (this.#rekeyTimer) clearTimeout(this.#rekeyTimer)
-    if (this.#zeroKeyTimer) clearTimeout(this.#zeroKeyTimer)
-    this.removeAllListeners()
+export function stopKeepalive(self: Peer): void {
+  if (self.keepaliveTimer) {
+    clearInterval(self.keepaliveTimer)
+    self.keepaliveTimer = null
   }
+}
+
+export function destroy(self: Peer): void {
+  stopKeepalive(self)
+  if (self.handshakeTimer) clearTimeout(self.handshakeTimer)
+  if (self.rekeyTimer) clearTimeout(self.rekeyTimer)
+  if (self.zeroKeyTimer) clearTimeout(self.zeroKeyTimer)
+  self.events.removeAllListeners()
 }

@@ -5,86 +5,17 @@
  * data transfer with sliding window, retransmission, and connection teardown.
  */
 import * as NCrypto from "node:crypto"
-import type { Device } from "../wireguard/Device.ts"
-import type { Peer } from "../wireguard/Peer.ts"
+import type * as Peer from "../wireguard/Peer.ts"
+import type * as TypedEmitter from "../util/TypedEmitter.ts"
+import * as IPv4 from "./IPv4.ts"
 
-// ─── IP Protocol ────────────────────────────────────────────────────────────
+export interface PacketTransport {
+  events: TypedEmitter.TypedEmitter<{ packet: [data: Uint8Array, peer: Peer.Peer] }>
+  sendPacket(peer: Peer.Peer, data: Uint8Array): void
+  getPeers(): Peer.Peer[]
+}
 
-const IP_VERSION = 4
-const IP_HEADER_LEN = 20
 const IP_PROTO_TCP = 6
-const IP_TTL = 64
-
-function buildIPv4Header(
-  src: Uint8Array, // 4 bytes
-  dst: Uint8Array, // 4 bytes
-  protocol: number,
-  payload: Uint8Array,
-  id: number,
-): Uint8Array {
-  const totalLength = IP_HEADER_LEN + payload.length
-  const header = new Uint8Array(totalLength)
-  const view = new DataView(header.buffer)
-
-  header[0] = (IP_VERSION << 4) | (IP_HEADER_LEN >> 2) // version + IHL
-  header[1] = 0 // DSCP + ECN
-  view.setUint16(2, totalLength, false) // total length
-  view.setUint16(4, id, false) // identification
-  view.setUint16(6, 0x4000, false) // flags: Don't Fragment
-  header[8] = IP_TTL
-  header[9] = protocol
-  // checksum at offset 10-11, filled below
-  header.set(src, 12)
-  header.set(dst, 16)
-
-  // IP header checksum
-  view.setUint16(10, 0, false)
-  const cksum = ipChecksum(header.subarray(0, IP_HEADER_LEN))
-  view.setUint16(10, cksum, false)
-
-  // Copy payload
-  header.set(payload, IP_HEADER_LEN)
-  return header
-}
-
-function ipChecksum(data: Uint8Array): number {
-  let sum = 0
-  const view = new DataView(data.buffer, data.byteOffset, data.byteLength)
-  for (let i = 0; i < data.length - 1; i += 2) {
-    sum += view.getUint16(i, false)
-  }
-  if (data.length & 1) {
-    sum += data[data.length - 1]! << 8
-  }
-  while (sum >> 16) {
-    sum = (sum & 0xffff) + (sum >> 16)
-  }
-  return (~sum) & 0xffff
-}
-
-function parseIPv4(packet: Uint8Array): {
-  src: Uint8Array
-  dst: Uint8Array
-  protocol: number
-  payload: Uint8Array
-  totalLength: number
-} | null {
-  if (packet.length < IP_HEADER_LEN) return null
-  const version = (packet[0]! >> 4) & 0xf
-  if (version !== 4) return null
-
-  const ihl = (packet[0]! & 0xf) * 4
-  if (packet.length < ihl) return null
-
-  const view = new DataView(packet.buffer, packet.byteOffset, packet.byteLength)
-  const totalLength = view.getUint16(2, false)
-  const protocol = packet[9]!
-  const src = packet.slice(12, 16)
-  const dst = packet.slice(16, 20)
-  const payload = packet.slice(ihl, totalLength)
-
-  return { src, dst, protocol, payload, totalLength }
-}
 
 // ─── TCP Protocol ───────────────────────────────────────────────────────────
 
@@ -151,7 +82,7 @@ function tcpChecksum(srcIP: Uint8Array, dstIP: Uint8Array, segment: Uint8Array):
   pView.setUint16(10, segment.length, false)
   pseudo.set(segment, 12)
 
-  return ipChecksum(pseudo)
+  return IPv4.checksum(pseudo)
 }
 
 interface TCPHeader {
@@ -215,8 +146,8 @@ export class TcpConnection {
   #remotePort: number
   #localIP: Uint8Array
   #remoteIP: Uint8Array
-  #peer: Peer
-  #device: Device
+  #peer: Peer.Peer
+  #device: PacketTransport
   #ipId = 1
 
   #sendSeq: number // next sequence number to send
@@ -243,8 +174,8 @@ export class TcpConnection {
     remoteIP: Uint8Array,
     localPort: number,
     remotePort: number,
-    peer: Peer,
-    device: Device,
+    peer: Peer.Peer,
+    device: PacketTransport,
   ) {
     this.#localIP = localIP
     this.#remoteIP = remoteIP
@@ -495,7 +426,7 @@ export class TcpConnection {
       this.#remoteIP,
     )
 
-    const ipPacket = buildIPv4Header(this.#localIP, this.#remoteIP, IP_PROTO_TCP, segment, this.#ipId++)
+    const ipPacket = IPv4.buildPacket(this.#localIP, this.#remoteIP, IP_PROTO_TCP, segment, this.#ipId++)
     if (this.#ipId > 0xffff) this.#ipId = 1
 
     const seqLen = payload.length + ((flags & TCP_SYN) ? 1 : 0) + ((flags & TCP_FIN) ? 1 : 0)
@@ -525,7 +456,7 @@ export class TcpConnection {
       this.#remoteIP,
     )
 
-    const ipPacket = buildIPv4Header(this.#localIP, this.#remoteIP, IP_PROTO_TCP, segment, this.#ipId++)
+    const ipPacket = IPv4.buildPacket(this.#localIP, this.#remoteIP, IP_PROTO_TCP, segment, this.#ipId++)
     if (this.#ipId > 0xffff) this.#ipId = 1
     this.#device.sendPacket(this.#peer, ipPacket)
   }
@@ -548,7 +479,7 @@ export class TcpConnection {
       this.#remoteIP,
     )
 
-    const ipPacket = buildIPv4Header(this.#localIP, this.#remoteIP, IP_PROTO_TCP, segment, this.#ipId++)
+    const ipPacket = IPv4.buildPacket(this.#localIP, this.#remoteIP, IP_PROTO_TCP, segment, this.#ipId++)
     this.#device.sendPacket(this.#peer, ipPacket)
   }
 
@@ -642,11 +573,6 @@ function seqAfter(a: number, b: number): boolean {
   return ((a - b) & 0xffffffff) > 0 && ((a - b) & 0xffffffff) < 0x80000000
 }
 
-function parseIPAddress(ip: string): Uint8Array {
-  const parts = ip.split(".").map(Number)
-  return new Uint8Array(parts)
-}
-
 /** Ephemeral port allocator — randomize start to avoid collisions across runs */
 let nextEphemeralPort = 49152 + Math.floor(Math.random() * 8192)
 
@@ -657,23 +583,22 @@ function allocatePort(): number {
 }
 
 export class TcpStack {
-  #device: Device
+  #device: PacketTransport
   #connections: Map<string, TcpConnection> = new Map()
   #localIP: Uint8Array
 
-  constructor(device: Device, localIP: string) {
+  constructor(device: PacketTransport, localIP: string) {
     this.#device = device
-    this.#localIP = parseIPAddress(localIP)
+    this.#localIP = IPv4.parse(localIP)
 
-    // Listen for incoming IP packets from the WireGuard tunnel
-    this.#device.on("packet", (data: Uint8Array, _peer: Peer) => {
+    this.#device.events.on("packet", (data: Uint8Array, _peer: Peer.Peer) => {
       this.#handleIPPacket(data)
     })
   }
 
   /** Create a new outbound TCP connection through the WireGuard tunnel */
-  connect(host: string, port: number, peer: Peer): TcpConnection {
-    const remoteIP = parseIPAddress(host)
+  connect(host: string, port: number, peer: Peer.Peer): TcpConnection {
+    const remoteIP = IPv4.parse(host)
     const localPort = allocatePort()
 
     const conn = new TcpConnection(this.#localIP, remoteIP, localPort, port, peer, this.#device)
@@ -690,7 +615,7 @@ export class TcpStack {
   }
 
   #handleIPPacket(packet: Uint8Array): void {
-    const ip = parseIPv4(packet)
+    const ip = IPv4.parsePacket(packet)
     if (!ip) return
     if (ip.protocol !== IP_PROTO_TCP) return
 
@@ -726,7 +651,7 @@ export class TcpStack {
       ip.src,
     )
 
-    const ipPacket = buildIPv4Header(ip.dst, ip.src, IP_PROTO_TCP, segment, 0)
+    const ipPacket = IPv4.buildPacket(ip.dst, ip.src, IP_PROTO_TCP, segment, 0)
     const peers = this.#device.getPeers()
     if (peers[0]) {
       this.#device.sendPacket(peers[0], ipPacket)
@@ -741,5 +666,4 @@ export class TcpStack {
   }
 }
 
-// Export helpers for testing
-export { parseIPv4, parseTCPSegment, parseIPAddress }
+export { parseTCPSegment }

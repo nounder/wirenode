@@ -1,7 +1,7 @@
 import { test, expect } from "bun:test"
 import * as NEvents from "node:events"
-import type { Device } from "../wireguard/Device.ts"
-import type { Peer } from "../wireguard/Peer.ts"
+import type * as Device from "../wireguard/Device.ts"
+import type * as Peer from "../wireguard/Peer.ts"
 import {
   buildUdpSegment,
   IpProtocol,
@@ -10,20 +10,21 @@ import {
   UdpStack,
 } from "./UdpStack.ts"
 
-class FakeDevice extends NEvents.EventEmitter {
-  sent: Array<{ peer: Peer; packet: Uint8Array }> = []
+class FakeDevice {
+  events = new NEvents.EventEmitter()
+  sent: Array<{ peer: Peer.Peer; packet: Uint8Array }> = []
 
-  sendPacket(peer: Peer, packet: Uint8Array): void {
+  sendPacket(peer: Peer.Peer, packet: Uint8Array): void {
     this.sent.push({ peer, packet })
   }
 }
 
-function fakeDevice(): Device & FakeDevice {
-  return new FakeDevice() as Device & FakeDevice
+function fakeDevice(): Device.Device & FakeDevice {
+  return new FakeDevice() as unknown as Device.Device & FakeDevice
 }
 
-function fakePeer(): Peer {
-  return {} as Peer
+function fakePeer(): Peer.Peer {
+  return {} as Peer.Peer
 }
 
 test("UdpSession sends IPv4 UDP packets through the WireGuard device", () => {
@@ -78,7 +79,7 @@ test("UdpStack demuxes inbound UDP replies to the matching session", async () =>
   )
   const packet = IPv4.buildPacket(srcIp, dstIp, IpProtocol.Udp, segment, 7)
 
-  device.emit("packet", packet, peer)
+  device.events.emit("packet", packet, peer)
 
   expect(new TextDecoder().decode(await received)).toBe("response")
   stack.destroy()
@@ -99,7 +100,7 @@ test("UdpStack drops inbound UDP packets without a matching session", () => {
   const segment = buildUdpSegment(53, session.localPort, new Uint8Array([1, 2, 3]), srcIp, dstIp)
   const packet = IPv4.buildPacket(srcIp, dstIp, IpProtocol.Udp, segment, 9)
 
-  device.emit("packet", packet, peer)
+  device.events.emit("packet", packet, peer)
 
   expect(received).toBe(false)
   stack.destroy()

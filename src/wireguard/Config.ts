@@ -3,7 +3,7 @@
  */
 import type { PeerConfig } from "./Peer.ts"
 
-export interface InterfaceConfig {
+interface InterfaceConfig {
   privateKey: Uint8Array
   address: string[]
   dns: string[]
@@ -13,26 +13,26 @@ export interface InterfaceConfig {
   checkAliveInterval: number
 }
 
-export interface TcpClientTunnelConfig {
+interface TcpClientTunnelConfig {
   type: "tcpClient"
   bindAddress: string
   target: string
 }
 
-export interface TcpServerTunnelConfig {
+interface TcpServerTunnelConfig {
   type: "tcpServer"
   listenPort: number
   target: string
 }
 
-export interface Socks5Config {
+interface Socks5Config {
   type: "socks5"
   bindAddress: string
   username: string
   password: string
 }
 
-export interface HttpProxyConfig {
+interface HttpProxyConfig {
   type: "http"
   bindAddress: string
   username: string
@@ -41,19 +41,19 @@ export interface HttpProxyConfig {
   keyFile: string
 }
 
-export interface UdpProxyConfig {
+interface UdpProxyConfig {
   type: "udp"
   bindAddress: string
   target: string
   inactivityTimeout: number
 }
 
-export interface StdioTunnelConfig {
+interface StdioTunnelConfig {
   type: "stdio"
   target: string
 }
 
-export type RoutineConfig =
+type RoutineConfig =
   | TcpClientTunnelConfig
   | TcpServerTunnelConfig
   | Socks5Config
@@ -65,14 +65,14 @@ export interface ResolveConfig {
   resolveStrategy: "auto" | "ipv4" | "ipv6"
 }
 
-export interface Configuration {
+export interface Config {
   interface: InterfaceConfig
   peers: PeerConfig[]
   routines: RoutineConfig[]
   resolve: ResolveConfig
 }
 
-export interface ConfigError {
+interface ConfigError {
   message: string
   line?: number
   section?: string
@@ -83,9 +83,9 @@ type Result<T> =
   | { ok: true; value: T }
   | { ok: false; error: ConfigError }
 
-export type ConfigResult = Result<Configuration>
+type ConfigResult = Result<Config>
 
-export interface SectionEntry {
+interface SectionEntry {
   value: string
   line: number
 }
@@ -415,7 +415,7 @@ export function build(sections: Section[]): ConfigResult {
   return formatResult(rawBuild(sections))
 }
 
-export interface ConfigPatch {
+interface ConfigPatch {
   Interface?: {
     PrivateKey?: string
     Address?: string
@@ -477,7 +477,7 @@ const PatchSectionToInternal: Record<string, string> = {
   Resolve: "resolve",
 }
 
-export function merge(base: Configuration, patch: ConfigPatch): ConfigResult {
+export function merge(base: Config, patch: ConfigPatch): ConfigResult {
   const sections = toSections(base)
 
   for (const [patchSection, fields] of Object.entries(patch)) {
@@ -502,7 +502,7 @@ export function merge(base: Configuration, patch: ConfigPatch): ConfigResult {
   return formatResult(rawBuild(sections))
 }
 
-function toSections(config: Configuration): Section[] {
+function toSections(config: Config): Section[] {
   const sections: Section[] = []
   const bytesToB64 = (b: Uint8Array): string => Buffer.from(b).toString("base64")
   const isAllZero = (b: Uint8Array): boolean => b.every((x) => x === 0)

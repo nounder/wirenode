@@ -2,167 +2,161 @@
  * WireGuard client with SOCKS5/HTTP proxy support.
  */
 import * as Config from "./wireguard/Config.ts"
-import { Device } from "./wireguard/Device.ts"
-import { VirtualTun } from "./net/VirtualTun.ts"
+import * as Device from "./wireguard/Device.ts"
+import * as VirtualTun from "./net/VirtualTun.ts"
 import type { StreamPair } from "./net/Bridge.ts"
-import { parseHostPort } from "./net/HostPort.ts"
+import * as Address from "./net/Address.ts"
 import * as Socks5 from "./proxy/Socks5.ts"
 import * as Http from "./proxy/Http.ts"
 import * as TcpTunnel from "./proxy/TcpTunnel.ts"
 import * as UdpTunnel from "./proxy/UdpTunnel.ts"
+import * as Result from "./Result.ts"
 
-export class Wireproxy {
-  #device: Device | null = null
-  #vt: VirtualTun | null = null
-  #config: Config.Configuration
-  #handles: { stop: () => Promise<void> }[] = []
+export interface WireproxyResource extends AsyncDisposable {
+  config: Config.Config
+  device: Device.DeviceResource
+  vt: VirtualTun.VirtualTunResource
+  _handles: { stop: () => Promise<void> }[]
+}
 
-  constructor(config: Config.Configuration) {
-    this.#config = config
+export async function open(config: Config.Config): Promise<Result.Result<WireproxyResource>> {
+  const conf = config
+
+  const deviceResult = await Device.open({
+    privateKey: conf.interface.privateKey,
+    listenPort: conf.interface.listenPort,
+    peers: conf.peers,
+    mtu: conf.interface.mtu,
+  })
+  if (!deviceResult.ok) return deviceResult
+  const device = deviceResult.value
+
+  console.log(`WireGuard device up on port ${Device.getPort(device)}`)
+
+  const vt = VirtualTun.open({
+    device,
+    addresses: conf.interface.address,
+    dns: conf.interface.dns,
+    resolveConfig: conf.resolve,
+  })
+
+  for (const peer of Device.getPeers(device)) {
+    if (peer.endpoint) {
+      Device.initiateHandshake(device, peer)
+    }
   }
 
-  async start(): Promise<void> {
-    const conf = this.#config
+  device.events.on("handshakeComplete", (peer) => {
+    console.log(`Handshake complete with peer ${peer.publicKeyHex.slice(0, 16)}...`)
+  })
 
-    // Create WireGuard device
-    this.#device = new Device({
-      privateKey: conf.interface.privateKey,
-      listenPort: conf.interface.listenPort,
-      peers: conf.peers,
-      mtu: conf.interface.mtu,
-    })
+  device.events.on("error", (err) => {
+    console.error(`WireGuard error: ${err.message}`)
+  })
 
-    // Start device
-    await this.#device.up()
-    console.log(`WireGuard device up on port ${this.#device.getPort()}`)
+  const dial = async (host: string, port: number): Promise<StreamPair> => {
+    return VirtualTun.dial(vt, host, port)
+  }
 
-    // Create virtual tun
-    this.#vt = new VirtualTun({
-      device: this.#device,
-      addresses: conf.interface.address,
-      dns: conf.interface.dns,
-      resolveConfig: conf.resolve,
-    })
+  const promises: Promise<{ stop: () => Promise<void> }>[] = []
 
-    // Initiate handshakes with all peers that have endpoints
-    for (const peer of this.#device.getPeers()) {
-      if (peer.endpoint) {
-        this.#device.initiateHandshake(peer)
+  for (const routine of conf.routines) {
+    switch (routine.type) {
+      case "socks5": {
+        const bind = Address.parse(routine.bindAddress)
+        promises.push(
+          Socks5.serve({
+            host: bind.host,
+            port: bind.port,
+            username: routine.username || undefined,
+            password: routine.password || undefined,
+            dial,
+          }),
+        )
+        break
       }
-    }
 
-    this.#device.on("handshakeComplete", (peer) => {
-      console.log(`Handshake complete with peer ${peer.publicKeyHex.slice(0, 16)}...`)
-    })
-
-    this.#device.on("error", (err) => {
-      console.error(`WireGuard error: ${err.message}`)
-    })
-
-    const dial = async (host: string, port: number): Promise<StreamPair> => {
-      return this.#vt!.dial(host, port)
-    }
-
-    // Start all configured routines
-    const promises: Promise<{ stop: () => Promise<void> }>[] = []
-
-    for (const routine of conf.routines) {
-      switch (routine.type) {
-        case "socks5": {
-          const bind = parseHostPort(routine.bindAddress)
-          promises.push(
-            Socks5.serve({
-              host: bind.host,
-              port: bind.port,
-              username: routine.username || undefined,
-              password: routine.password || undefined,
-              dial,
-            }),
-          )
-          break
-        }
-
-        case "http": {
-          const bind = parseHostPort(routine.bindAddress)
-          promises.push(
-            Http.serve({
-              host: bind.host,
-              port: bind.port,
-              username: routine.username || undefined,
-              password: routine.password || undefined,
-              certFile: routine.certFile || undefined,
-              keyFile: routine.keyFile || undefined,
-              dial,
-            }),
-          )
-          break
-        }
-
-        case "tcpClient": {
-          const bind = parseHostPort(routine.bindAddress)
-          const target = parseHostPort(routine.target)
-          promises.push(
-            TcpTunnel.serveClient({
-              host: bind.host,
-              port: bind.port,
-              targetHost: target.host,
-              targetPort: target.port,
-              dial,
-            }),
-          )
-          break
-        }
-
-        case "udp": {
-          const bind = parseHostPort(routine.bindAddress)
-          const target = parseHostPort(routine.target)
-          promises.push(
-            UdpTunnel.serve({
-              host: bind.host,
-              port: bind.port,
-              targetHost: target.host,
-              targetPort: target.port,
-              inactivityTimeout: routine.inactivityTimeout,
-              dial: (t) => this.#vt!.dialUdp(t),
-            }),
-          )
-          break
-        }
-
-        case "stdio":
-          console.log(`STDIO tunnel to ${routine.target} — not yet implemented`)
-          break
-
-        case "tcpServer":
-          console.log(
-            `TCP Server tunnel on port ${routine.listenPort} -> ${routine.target} — not yet implemented`,
-          )
-          break
+      case "http": {
+        const bind = Address.parse(routine.bindAddress)
+        promises.push(
+          Http.serve({
+            host: bind.host,
+            port: bind.port,
+            username: routine.username || undefined,
+            password: routine.password || undefined,
+            certFile: routine.certFile || undefined,
+            keyFile: routine.keyFile || undefined,
+            dial,
+          }),
+        )
+        break
       }
+
+      case "tcpClient": {
+        const bind = Address.parse(routine.bindAddress)
+        const target = Address.parse(routine.target)
+        promises.push(
+          TcpTunnel.serveClient({
+            host: bind.host,
+            port: bind.port,
+            targetHost: target.host,
+            targetPort: target.port,
+            dial,
+          }),
+        )
+        break
+      }
+
+      case "udp": {
+        const bind = Address.parse(routine.bindAddress)
+        const target = Address.parse(routine.target)
+        promises.push(
+          UdpTunnel.serve({
+            host: bind.host,
+            port: bind.port,
+            targetHost: target.host,
+            targetPort: target.port,
+            inactivityTimeout: routine.inactivityTimeout,
+            dial: (t) => VirtualTun.dialUdp(vt, t),
+          }),
+        )
+        break
+      }
+
+      case "stdio":
+        console.log(`STDIO tunnel to ${routine.target} — not yet implemented`)
+        break
+
+      case "tcpServer":
+        console.log(
+          `TCP Server tunnel on port ${routine.listenPort} -> ${routine.target} — not yet implemented`,
+        )
+        break
     }
-
-    this.#handles = await Promise.all(promises)
   }
 
-  async stop(): Promise<void> {
-    await Promise.all(this.#handles.map((h) => h.stop()))
-    this.#handles = []
-    if (this.#device) {
-      await this.#device.down()
-      this.#device = null
-    }
-    this.#vt = null
+  let handles: { stop: () => Promise<void> }[]
+  try {
+    handles = await Promise.all(promises)
+  } catch (e) {
+    VirtualTun.close(vt)
+    await Device.close(device)
+    return Result.error(e instanceof Error ? e : new Error(String(e)))
   }
 
-  [Symbol.asyncDispose](): Promise<void> {
-    return this.stop()
+  const resource: WireproxyResource = {
+    config,
+    device,
+    vt,
+    _handles: handles,
+    [Symbol.asyncDispose]: () => close(resource),
   }
+  return Result.ok(resource)
+}
 
-  getDevice(): Device | null {
-    return this.#device
-  }
-
-  getVirtualTun(): VirtualTun | null {
-    return this.#vt
-  }
+export async function close(self: WireproxyResource): Promise<void> {
+  await Promise.all(self._handles.map((h) => h.stop()))
+  self._handles = []
+  await Device.close(self.device)
+  VirtualTun.close(self.vt)
 }
