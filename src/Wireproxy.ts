@@ -154,6 +154,10 @@ export class Wireproxy {
     this.#vt = null
   }
 
+  [Symbol.asyncDispose](): Promise<void> {
+    return this.stop()
+  }
+
   getDevice(): Device | null {
     return this.#device
   }

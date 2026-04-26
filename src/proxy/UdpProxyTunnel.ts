@@ -125,11 +125,10 @@ export async function serve(options: UdpProxyOptions) {
   })
   console.log(`UDP Proxy: ${options.host}:${options.port} -> ${target}`)
 
-  return {
-    stop: () =>
-      new Promise<void>((resolve) => {
-        for (const [key, session] of sessions) closeSession(key, session)
-        listener.close(() => resolve())
-      }),
-  }
+  const stop = () =>
+    new Promise<void>((resolve) => {
+      for (const [key, session] of sessions) closeSession(key, session)
+      listener.close(() => resolve())
+    })
+  return { stop, [Symbol.asyncDispose]: stop }
 }

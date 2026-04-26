@@ -39,12 +39,11 @@ export async function serveClient(options: ClientOptions) {
     `TCP Client Tunnel: ${options.host}:${options.port} -> ${options.targetHost}:${options.targetPort}`,
   )
 
-  return {
-    stop: () =>
-      new Promise<void>((resolve, reject) => {
-        server.close((err) => (err ? reject(err) : resolve()))
-      }),
-  }
+  const stop = () =>
+    new Promise<void>((resolve, reject) => {
+      server.close((err) => (err ? reject(err) : resolve()))
+    })
+  return { stop, [Symbol.asyncDispose]: stop }
 }
 
 export function serveServer(options: ServerOptions): void {

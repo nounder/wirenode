@@ -104,6 +104,10 @@ export class Device extends NEvents.EventEmitter {
     }
   }
 
+  [Symbol.asyncDispose](): Promise<void> {
+    return this.down()
+  }
+
   getPort(): number {
     return this.#listenPort
   }

@@ -229,10 +229,9 @@ export async function serve(options: Options) {
   })
   console.log(`SOCKS5 proxy listening on ${options.host}:${options.port}`)
 
-  return {
-    stop: () =>
-      new Promise<void>((resolve, reject) => {
-        server.close((err) => (err ? reject(err) : resolve()))
-      }),
-  }
+  const stop = () =>
+    new Promise<void>((resolve, reject) => {
+      server.close((err) => (err ? reject(err) : resolve()))
+    })
+  return { stop, [Symbol.asyncDispose]: stop }
 }
