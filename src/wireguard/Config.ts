@@ -93,7 +93,7 @@ export interface SectionEntry {
 export interface Section {
   name: string
   line: number
-  entries: Map<string, SectionEntry>
+  entries: Record<string, SectionEntry>
 }
 
 const KnownSections = new Map<string, ReadonlySet<string>>([
@@ -128,21 +128,29 @@ function displaySectionName(name: string): string {
 
 function keyMeta(section: Section, key: string): Pick<ConfigError, "line" | "section" | "key"> {
   return {
-    line: section.entries.get(key)?.line ?? section.line,
+    line: section.entries[key]?.line ?? section.line,
     section: displaySectionName(section.name),
     key,
   }
 }
 
-export function formatConfigError(error: ConfigError): string {
+function formatConfigError(error: ConfigError): ConfigError {
+  if (error.line === undefined && error.section === undefined && error.key === undefined) {
+    return error
+  }
   const details: string[] = []
   if (error.line !== undefined) details.push(`line ${error.line}`)
   if (error.section !== undefined) details.push(`section [${error.section}]`)
   if (error.key !== undefined) details.push(`key ${error.key}`)
-  return details.length > 0 ? `${error.message} (${details.join(", ")})` : error.message
+  return { ...error, message: `${error.message} (${details.join(", ")})` }
 }
 
-export function parseSections(text: string): Result<Section[]> {
+function formatResult<T>(result: Result<T>): Result<T> {
+  if (result.ok) return result
+  return { ok: false, error: formatConfigError(result.error) }
+}
+
+function rawParseSections(text: string): Result<Section[]> {
   const sections: Section[] = []
   let current: Section | null = null
 
@@ -164,7 +172,7 @@ export function parseSections(text: string): Result<Section[]> {
           },
         }
       }
-      current = { name, line: i + 1, entries: new Map() }
+      current = { name, line: i + 1, entries: {} }
       sections.push(current)
       continue
     }
@@ -192,7 +200,7 @@ export function parseSections(text: string): Result<Section[]> {
 
     if (!current) {
       // Root-level key
-      current = { name: "", line: i + 1, entries: new Map() }
+      current = { name: "", line: i + 1, entries: {} }
       sections.push(current)
     }
 
@@ -207,7 +215,7 @@ export function parseSections(text: string): Result<Section[]> {
         },
       }
     }
-    current.entries.set(key, { value, line: i + 1 })
+    current.entries[key] = { value, line: i + 1 }
   }
 
   return { ok: true, value: sections }
@@ -228,7 +236,7 @@ function validateKnownConfig(sections: Section[]): Result<void> {
       }
     }
 
-    for (const [key, entry] of section.entries) {
+    for (const [key, entry] of Object.entries(section.entries)) {
       if (allowedKeys.has(key)) continue
 
       return {
@@ -268,7 +276,7 @@ function resolveEnvVar(
 }
 
 function getString(section: Section, key: string): Result<string> {
-  const entry = section.entries.get(key)
+  const entry = section.entries[key]
   if (entry === undefined) return { ok: true, value: "" }
   return resolveEnvVar(entry.value, keyMeta(section, key))
 }
@@ -287,7 +295,7 @@ function getRequiredString(section: Section, key: string, label: string): Result
 }
 
 function getOptionalInt(section: Section, key: string): Result<number | undefined> {
-  const entry = section.entries.get(key)
+  const entry = section.entries[key]
   if (entry === undefined) return { ok: true, value: undefined }
   const value = resolveEnvVar(entry.value, keyMeta(section, key))
   if (!value.ok) return value
@@ -392,12 +400,198 @@ function parseResolveStrategy(
 }
 
 export function parse(text: string): ConfigResult {
-  const parsed = parseSections(text)
-  if (!parsed.ok) return parsed
-  return build(parsed.value)
+  const parsed = rawParseSections(text)
+  if (!parsed.ok) return formatResult(parsed)
+  return formatResult(rawBuild(parsed.value))
+}
+
+export const fromText = parse
+
+export function parseSections(text: string): Result<Section[]> {
+  return formatResult(rawParseSections(text))
 }
 
 export function build(sections: Section[]): ConfigResult {
+  return formatResult(rawBuild(sections))
+}
+
+export interface ConfigPatch {
+  Interface?: {
+    PrivateKey?: string
+    Address?: string
+    DNS?: string
+    MTU?: number
+    ListenPort?: number
+    CheckAlive?: string
+    CheckAliveInterval?: number
+  }
+  Peer?: {
+    PublicKey?: string
+    PresharedKey?: string
+    Endpoint?: string
+    PersistentKeepalive?: number
+    AllowedIPs?: string
+  }
+  HTTP?: {
+    BindAddress?: string
+    Username?: string
+    Password?: string
+    CertFile?: string
+    KeyFile?: string
+  }
+  Socks5?: {
+    BindAddress?: string
+    Username?: string
+    Password?: string
+  }
+  TCPClientTunnel?: {
+    BindAddress?: string
+    Target?: string
+  }
+  TCPServerTunnel?: {
+    ListenPort?: number
+    Target?: string
+  }
+  UDPProxyTunnel?: {
+    BindAddress?: string
+    Target?: string
+    InactivityTimeout?: number
+  }
+  STDIOTunnel?: {
+    Target?: string
+  }
+  Resolve?: {
+    ResolveStrategy?: ResolveConfig["resolveStrategy"]
+  }
+}
+
+const PatchSectionToInternal: Record<string, string> = {
+  Interface: "interface",
+  Peer: "peer",
+  HTTP: "http",
+  Socks5: "socks5",
+  TCPClientTunnel: "tcpclienttunnel",
+  TCPServerTunnel: "tcpservertunnel",
+  UDPProxyTunnel: "udpproxytunnel",
+  STDIOTunnel: "stdiotunnel",
+  Resolve: "resolve",
+}
+
+export function merge(base: Configuration, patch: ConfigPatch): ConfigResult {
+  const sections = toSections(base)
+
+  for (const [patchSection, fields] of Object.entries(patch)) {
+    if (!fields) continue
+    const internalName = PatchSectionToInternal[patchSection]
+    if (!internalName) {
+      return { ok: false, error: { message: `unknown patch section: ${patchSection}` } }
+    }
+
+    let section = sections.find((s) => s.name === internalName)
+    if (!section) {
+      section = { name: internalName, line: 0, entries: {} }
+      sections.push(section)
+    }
+
+    for (const [field, value] of Object.entries(fields)) {
+      if (value === undefined) continue
+      section.entries[field.toLowerCase()] = { value: String(value), line: 0 }
+    }
+  }
+
+  return formatResult(rawBuild(sections))
+}
+
+function toSections(config: Configuration): Section[] {
+  const sections: Section[] = []
+  const bytesToB64 = (b: Uint8Array): string => Buffer.from(b).toString("base64")
+  const isAllZero = (b: Uint8Array): boolean => b.every((x) => x === 0)
+  const entry = (value: string): SectionEntry => ({ value, line: 0 })
+
+  const iface = config.interface
+  const ifaceEntries: Record<string, SectionEntry> = {
+    privatekey: entry(bytesToB64(iface.privateKey)),
+    address: entry(iface.address.join(", ")),
+    dns: entry(iface.dns.join(", ")),
+    mtu: entry(String(iface.mtu)),
+    checkalive: entry(iface.checkAlive.join(", ")),
+    checkaliveinterval: entry(String(iface.checkAliveInterval)),
+  }
+  if (iface.listenPort !== undefined) {
+    ifaceEntries.listenport = entry(String(iface.listenPort))
+  }
+  sections.push({ name: "interface", line: 0, entries: ifaceEntries })
+
+  for (const peer of config.peers) {
+    const e: Record<string, SectionEntry> = {
+      publickey: entry(bytesToB64(peer.publicKey)),
+      allowedips: entry(peer.allowedIPs.join(", ")),
+      persistentkeepalive: entry(String(peer.persistentKeepalive)),
+    }
+    if (!isAllZero(peer.presharedKey)) e.presharedkey = entry(bytesToB64(peer.presharedKey))
+    if (peer.endpoint) e.endpoint = entry(peer.endpoint)
+    sections.push({ name: "peer", line: 0, entries: e })
+  }
+
+  for (const r of config.routines) {
+    switch (r.type) {
+      case "tcpClient":
+        sections.push({
+          name: "tcpclienttunnel",
+          line: 0,
+          entries: { bindaddress: entry(r.bindAddress), target: entry(r.target) },
+        })
+        break
+      case "tcpServer":
+        sections.push({
+          name: "tcpservertunnel",
+          line: 0,
+          entries: { listenport: entry(String(r.listenPort)), target: entry(r.target) },
+        })
+        break
+      case "socks5": {
+        const e: Record<string, SectionEntry> = { bindaddress: entry(r.bindAddress) }
+        if (r.username) e.username = entry(r.username)
+        if (r.password) e.password = entry(r.password)
+        sections.push({ name: "socks5", line: 0, entries: e })
+        break
+      }
+      case "http": {
+        const e: Record<string, SectionEntry> = { bindaddress: entry(r.bindAddress) }
+        if (r.username) e.username = entry(r.username)
+        if (r.password) e.password = entry(r.password)
+        if (r.certFile) e.certfile = entry(r.certFile)
+        if (r.keyFile) e.keyfile = entry(r.keyFile)
+        sections.push({ name: "http", line: 0, entries: e })
+        break
+      }
+      case "udp":
+        sections.push({
+          name: "udpproxytunnel",
+          line: 0,
+          entries: {
+            bindaddress: entry(r.bindAddress),
+            target: entry(r.target),
+            inactivitytimeout: entry(String(r.inactivityTimeout)),
+          },
+        })
+        break
+      case "stdio":
+        sections.push({ name: "stdiotunnel", line: 0, entries: { target: entry(r.target) } })
+        break
+    }
+  }
+
+  sections.push({
+    name: "resolve",
+    line: 0,
+    entries: { resolvestrategy: entry(config.resolve.resolveStrategy) },
+  })
+
+  return sections
+}
+
+function rawBuild(sections: Section[]): ConfigResult {
   const known = validateKnownConfig(sections)
   if (!known.ok) return known
 
@@ -425,6 +619,8 @@ export function build(sections: Section[]): ConfigResult {
   if (!dns.ok) return dns
   const mtu = getInt(iface, "mtu", 1420)
   if (!mtu.ok) return mtu
+  const listenPort = getOptionalInt(iface, "listenport")
+  if (!listenPort.ok) return listenPort
   const checkAlive = getString(iface, "checkalive")
   if (!checkAlive.ok) return checkAlive
   const checkAliveInterval = getInt(iface, "checkaliveinterval", 5)
@@ -435,13 +631,10 @@ export function build(sections: Section[]): ConfigResult {
     address: parseCIDRAddresses(address.value),
     dns: parseAddressList(dns.value),
     mtu: mtu.value,
+    listenPort: listenPort.value,
     checkAlive: parseAddressList(checkAlive.value),
     checkAliveInterval: checkAliveInterval.value,
   }
-
-  const listenPort = getOptionalInt(iface, "listenport")
-  if (!listenPort.ok) return listenPort
-  if (listenPort.value !== undefined) ifaceConfig.listenPort = listenPort.value
 
   // Parse Peers
   const peerSections = getSection(sections, "peer")

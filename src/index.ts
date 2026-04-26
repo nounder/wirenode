@@ -12,6 +12,8 @@ export { Peer } from "./wireguard/Peer.ts"
 export type { DeviceConfig } from "./wireguard/Device.ts"
 export type { PeerConfig } from "./wireguard/Peer.ts"
 export { VirtualTun } from "./net/VirtualTun.ts"
+export * as Http from "./proxy/Http.ts"
+export * as Socks5 from "./proxy/Socks5.ts"
 
 if (import.meta.main) {
   const args = process.argv.slice(2)
@@ -106,7 +108,7 @@ Options:
 
   const sectionsResult = Config.parseSections(configText)
   if (!sectionsResult.ok) {
-    console.error(`Configuration error: ${Config.formatConfigError(sectionsResult.error)}`)
+    console.error(`Configuration error: ${sectionsResult.error.message}`)
     process.exit(1)
   }
 
@@ -118,7 +120,7 @@ Options:
 
   const configResult = Config.build(sectionsResult.value)
   if (!configResult.ok) {
-    console.error(`Configuration error: ${Config.formatConfigError(configResult.error)}`)
+    console.error(`Configuration error: ${configResult.error.message}`)
     process.exit(1)
   }
 
@@ -219,10 +221,10 @@ function applyOverrides(
 
     let section = sections.find((s) => s.name === sectionName)
     if (!section) {
-      section = { name: sectionName, line: 0, entries: new Map() }
+      section = { name: sectionName, line: 0, entries: {} }
       sections.push(section)
     }
-    section.entries.set(key, { value, line: 0 })
+    section.entries[key] = { value, line: 0 }
   }
   return { ok: true }
 }
