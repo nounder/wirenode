@@ -7,6 +7,7 @@ import { Wireproxy } from "./Wireproxy.ts"
 import * as Config from "./wireguard/Config.ts"
 
 export { Wireproxy }
+export * as Config from "./wireguard/Config.ts"
 export { Device } from "./wireguard/Device.ts"
 export { Peer } from "./wireguard/Peer.ts"
 export type { DeviceConfig } from "./wireguard/Device.ts"
