@@ -54,7 +54,7 @@ test("chacha20-poly1305 tamper detection", () => {
 
   // Tamper with ciphertext
   const tampered = new Uint8Array(ciphertext)
-  tampered[0] ^= 0xff
+  tampered[0] = tampered[0]! ^ 0xff
   const result = ChaCha20Poly1305.open(key, nonce, tampered)
   expect(result).toBeNull()
 })

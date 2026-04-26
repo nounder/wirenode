@@ -204,8 +204,8 @@ export function consumeMessageInitiation(
   const encryptedStatic = msg.slice(40, 88) // 48 bytes
   const encryptedTimestamp = msg.slice(88, 116) // 28 bytes
 
-  let hash = new Uint8Array(InitialHash)
-  let chainKey = new Uint8Array(InitialChainKey)
+  let hash: Uint8Array = new Uint8Array(InitialHash)
+  let chainKey: Uint8Array = new Uint8Array(InitialChainKey)
 
   // mixHash(localStaticPublic)
   hash = mixHash(hash, localStaticPublic)

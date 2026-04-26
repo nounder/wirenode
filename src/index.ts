@@ -16,7 +16,7 @@ export { VirtualTun } from "./net/VirtualTun.ts"
 export * as Http from "./proxy/Http.ts"
 export * as Socks5 from "./proxy/Socks5.ts"
 export * as TcpTunnel from "./proxy/TcpTunnel.ts"
-export * as UdpProxyTunnel from "./proxy/UdpProxyTunnel.ts"
+export * as UdpTunnel from "./proxy/UdpTunnel.ts"
 
 if (import.meta.main) {
   const args = process.argv.slice(2)

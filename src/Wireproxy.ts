@@ -9,7 +9,7 @@ import { parseHostPort } from "./net/HostPort.ts"
 import * as Socks5 from "./proxy/Socks5.ts"
 import * as Http from "./proxy/Http.ts"
 import * as TcpTunnel from "./proxy/TcpTunnel.ts"
-import * as UdpProxyTunnel from "./proxy/UdpProxyTunnel.ts"
+import * as UdpTunnel from "./proxy/UdpTunnel.ts"
 
 export class Wireproxy {
   #device: Device | null = null
@@ -117,7 +117,7 @@ export class Wireproxy {
           const bind = parseHostPort(routine.bindAddress)
           const target = parseHostPort(routine.target)
           promises.push(
-            UdpProxyTunnel.serve({
+            UdpTunnel.serve({
               host: bind.host,
               port: bind.port,
               targetHost: target.host,
