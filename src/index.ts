@@ -3,13 +3,15 @@
  * wireproxy — WireGuard userspace client with SOCKS5/HTTP proxy support.
  * Compatible with pufferffish/wireproxy configuration format.
  */
-export { Wireproxy } from "./Wireproxy.ts"
+import { Wireproxy } from "./Wireproxy.ts"
+import { formatConfigError, parseConfig } from "./wireguard/Config.ts"
+import type { Configuration } from "./wireguard/Config.ts"
+
+export { Wireproxy }
 export { Device } from "./wireguard/Device.ts"
 export { Peer } from "./wireguard/Peer.ts"
 export type { DeviceConfig } from "./wireguard/Device.ts"
 export type { PeerConfig } from "./wireguard/Peer.ts"
-export { parseConfig } from "./wireguard/Config.ts"
-export type { Configuration, InterfaceConfig, RoutineConfig } from "./wireguard/Config.ts"
 export { VirtualTun } from "./net/VirtualTun.ts"
 
 if (import.meta.main) {
@@ -89,9 +91,6 @@ Options:
     process.exit(showHelp ? 0 : 1)
   }
 
-  const { Wireproxy } = await import("./Wireproxy.ts")
-  const { parseConfig } = await import("./wireguard/Config.ts")
-
   let configText: string
   try {
     configText = await Bun.file(configPath).text()
@@ -100,15 +99,22 @@ Options:
     process.exit(1)
   }
 
+  const configResult = parseConfig(configText)
+  if (!configResult.ok) {
+    console.error(`Configuration error: ${formatConfigError(configResult.error)}`)
+    process.exit(1)
+  }
+
+  const config = configResult.value
+  const cliValidation = validateCliConfig(config)
+  if (!cliValidation.ok) {
+    console.error(`Configuration error: ${cliValidation.error}`)
+    process.exit(1)
+  }
+
   if (configTest) {
-    try {
-      parseConfig(configText)
-      console.log("Configuration is valid.")
-      process.exit(0)
-    } catch (err: unknown) {
-      console.error(`Configuration error: ${err instanceof Error ? err.message : err}`)
-      process.exit(1)
-    }
+    console.log("Configuration is valid.")
+    process.exit(0)
   }
 
   if (daemon) {
@@ -130,7 +136,7 @@ Options:
     console.error = () => {}
   }
 
-  const wp = new Wireproxy(configText)
+  const wp = new Wireproxy(config)
 
   // Health/status endpoint
   if (infoAddress) {
@@ -175,4 +181,24 @@ Options:
     console.error(`Failed to start: ${err instanceof Error ? err.message : err}`)
     process.exit(1)
   }
+}
+
+function validateCliConfig(config: Configuration): { ok: true } | { ok: false; error: string } {
+  const runnable = config.routines.filter(
+    (routine) =>
+      routine.type === "socks5" ||
+      routine.type === "http" ||
+      routine.type === "tcpClient" ||
+      routine.type === "udp",
+  )
+
+  if (runnable.length === 0) {
+    return {
+      ok: false,
+      error:
+        "no runnable proxy/tunnel section configured; add [Socks5], [HTTP], [TCPClientTunnel], or [UDPProxyTunnel]",
+    }
+  }
+
+  return { ok: true }
 }

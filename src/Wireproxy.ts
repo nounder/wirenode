@@ -1,7 +1,6 @@
 /**
  * WireGuard client with SOCKS5/HTTP proxy support.
  */
-import { parseConfig } from "./wireguard/Config.ts"
 import type { Configuration } from "./wireguard/Config.ts"
 import { Device } from "./wireguard/Device.ts"
 import { VirtualTun } from "./net/VirtualTun.ts"
@@ -11,18 +10,13 @@ import * as Http from "./proxy/Http.ts"
 import * as TcpTunnel from "./proxy/TcpTunnel.ts"
 import * as UdpProxy from "./proxy/UdpProxy.ts"
 
-export interface WireproxyOptions {
-  config: string // config file contents
-  logLevel?: number
-}
-
 export class Wireproxy {
   #device: Device | null = null
   #vt: VirtualTun | null = null
   #config: Configuration
 
-  constructor(configText: string) {
-    this.#config = parseConfig(configText)
+  constructor(config: Configuration) {
+    this.#config = config
   }
 
   async start(): Promise<void> {
@@ -112,18 +106,16 @@ export class Wireproxy {
               bindAddress: routine.bindAddress,
               target: routine.target,
               inactivityTimeout: routine.inactivityTimeout,
-              dial: (target) => this.#vt!.dialUDP(target),
+              dial: (target) => this.#vt!.dialUdp(target),
             }),
           )
           break
 
         case "stdio":
-          // TODO: STDIO tunnel (pipe stdin/stdout through WireGuard)
           console.log(`STDIO tunnel to ${routine.target} — not yet implemented`)
           break
 
         case "tcpServer":
-          // TODO: TCP server tunnel (listen on WireGuard interface)
           console.log(
             `TCP Server tunnel on port ${routine.listenPort} -> ${routine.target} — not yet implemented`,
           )

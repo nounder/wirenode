@@ -33,25 +33,34 @@ InactivityTimeout = 30
 `
 
 test("parse config - interface section", () => {
-  const config = Config.parseConfig(sampleConfig)
-  expect(config.interface.privateKey.length).toBe(32)
-  expect(config.interface.address).toEqual(["10.200.200.2"])
-  expect(config.interface.dns).toEqual(["10.200.200.1"])
-  expect(config.interface.mtu).toBe(1420)
+  const result = Config.parseConfig(sampleConfig)
+  expect(result.ok).toBe(true)
+  if (!result.ok) return
+
+  expect(result.value.interface.privateKey.length).toBe(32)
+  expect(result.value.interface.address).toEqual(["10.200.200.2"])
+  expect(result.value.interface.dns).toEqual(["10.200.200.1"])
+  expect(result.value.interface.mtu).toBe(1420)
 })
 
 test("parse config - peer section", () => {
-  const config = Config.parseConfig(sampleConfig)
-  expect(config.peers.length).toBe(1)
-  expect(config.peers[0]!.publicKey.length).toBe(32)
-  expect(config.peers[0]!.endpoint).toBe("my.server.com:51820")
-  expect(config.peers[0]!.persistentKeepalive).toBe(25)
-  expect(config.peers[0]!.allowedIPs).toEqual(["0.0.0.0/0", "::/0"])
+  const result = Config.parseConfig(sampleConfig)
+  expect(result.ok).toBe(true)
+  if (!result.ok) return
+
+  expect(result.value.peers.length).toBe(1)
+  expect(result.value.peers[0]!.publicKey.length).toBe(32)
+  expect(result.value.peers[0]!.endpoint).toBe("my.server.com:51820")
+  expect(result.value.peers[0]!.persistentKeepalive).toBe(25)
+  expect(result.value.peers[0]!.allowedIPs).toEqual(["0.0.0.0/0", "::/0"])
 })
 
 test("parse config - socks5 section", () => {
-  const config = Config.parseConfig(sampleConfig)
-  const socks = config.routines.find((r) => r.type === "socks5")
+  const result = Config.parseConfig(sampleConfig)
+  expect(result.ok).toBe(true)
+  if (!result.ok) return
+
+  const socks = result.value.routines.find((r) => r.type === "socks5")
   expect(socks).toBeDefined()
   if (socks?.type === "socks5") {
     expect(socks.bindAddress).toBe("127.0.0.1:25344")
@@ -61,8 +70,11 @@ test("parse config - socks5 section", () => {
 })
 
 test("parse config - http section", () => {
-  const config = Config.parseConfig(sampleConfig)
-  const http = config.routines.find((r) => r.type === "http")
+  const result = Config.parseConfig(sampleConfig)
+  expect(result.ok).toBe(true)
+  if (!result.ok) return
+
+  const http = result.value.routines.find((r) => r.type === "http")
   expect(http).toBeDefined()
   if (http?.type === "http") {
     expect(http.bindAddress).toBe("127.0.0.1:25345")
@@ -70,8 +82,11 @@ test("parse config - http section", () => {
 })
 
 test("parse config - tcp client tunnel", () => {
-  const config = Config.parseConfig(sampleConfig)
-  const tcp = config.routines.find((r) => r.type === "tcpClient")
+  const result = Config.parseConfig(sampleConfig)
+  expect(result.ok).toBe(true)
+  if (!result.ok) return
+
+  const tcp = result.value.routines.find((r) => r.type === "tcpClient")
   expect(tcp).toBeDefined()
   if (tcp?.type === "tcpClient") {
     expect(tcp.bindAddress).toBe("127.0.0.1:25565")
@@ -80,8 +95,11 @@ test("parse config - tcp client tunnel", () => {
 })
 
 test("parse config - udp proxy tunnel", () => {
-  const config = Config.parseConfig(sampleConfig)
-  const udp = config.routines.find((r) => r.type === "udp")
+  const result = Config.parseConfig(sampleConfig)
+  expect(result.ok).toBe(true)
+  if (!result.ok) return
+
+  const udp = result.value.routines.find((r) => r.type === "udp")
   expect(udp).toBeDefined()
   if (udp?.type === "udp") {
     expect(udp.bindAddress).toBe("127.0.0.1:53")
@@ -91,26 +109,35 @@ test("parse config - udp proxy tunnel", () => {
 })
 
 test("parse config - default resolve strategy", () => {
-  const config = Config.parseConfig(sampleConfig)
-  expect(config.resolve.resolveStrategy).toBe("auto")
+  const result = Config.parseConfig(sampleConfig)
+  expect(result.ok).toBe(true)
+  if (!result.ok) return
+
+  expect(result.value.resolve.resolveStrategy).toBe("auto")
 })
 
-test("missing interface section throws", () => {
-  expect(() =>
-    Config.parseConfig("[Peer]\nPublicKey = AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\n"),
-  ).toThrow()
+test("missing interface section returns error", () => {
+  const result = Config.parseConfig(
+    "[Peer]\nPublicKey = AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\n",
+  )
+  expect(result.ok).toBe(false)
+  if (result.ok) return
+
+  expect(result.error.message).toBe("exactly one [Interface] section required")
 })
 
-test("missing peer section throws", () => {
-  expect(() =>
-    Config.parseConfig(
-      "[Interface]\nPrivateKey = YNqHbfBQKaGvzefJtfkbMuig9bLFPiuo1PKKTq1HE0g=\nAddress = 10.0.0.1\n",
-    ),
-  ).toThrow()
+test("missing peer section returns error", () => {
+  const result = Config.parseConfig(
+    "[Interface]\nPrivateKey = YNqHbfBQKaGvzefJtfkbMuig9bLFPiuo1PKKTq1HE0g=\nAddress = 10.0.0.1\n",
+  )
+  expect(result.ok).toBe(false)
+  if (result.ok) return
+
+  expect(result.error.message).toBe("at least one [Peer] section required")
 })
 
 test("multiple peers", () => {
-  const config = Config.parseConfig(`
+  const result = Config.parseConfig(`
 [Interface]
 PrivateKey = YNqHbfBQKaGvzefJtfkbMuig9bLFPiuo1PKKTq1HE0g=
 Address = 10.0.0.1
@@ -123,5 +150,57 @@ Endpoint = server1:51820
 PublicKey = BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=
 Endpoint = server2:51820
 `)
-  expect(config.peers.length).toBe(2)
+  expect(result.ok).toBe(true)
+  if (!result.ok) return
+
+  expect(result.value.peers.length).toBe(2)
+})
+
+test("unknown section returns error", () => {
+  const result = Config.parseConfig(`
+[Interface]
+PrivateKey = YNqHbfBQKaGvzefJtfkbMuig9bLFPiuo1PKKTq1HE0g=
+
+[Peer]
+PublicKey = AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+
+[Sock5]
+BindAddress = 127.0.0.1:1080
+`)
+  expect(result.ok).toBe(false)
+  if (result.ok) return
+
+  expect(result.error.message).toContain("unknown config section")
+})
+
+test("unknown key returns error", () => {
+  const result = Config.parseConfig(`
+[Interface]
+PrivateKey = YNqHbfBQKaGvzefJtfkbMuig9bLFPiuo1PKKTq1HE0g=
+Address = 10.0.0.1
+Typo = nope
+
+[Peer]
+PublicKey = AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+`)
+  expect(result.ok).toBe(false)
+  if (result.ok) return
+
+  expect(result.error.message).toContain("unknown config key")
+})
+
+test("unsupported wg-quick key returns unknown key error", () => {
+  const result = Config.parseConfig(`
+[Interface]
+PrivateKey = YNqHbfBQKaGvzefJtfkbMuig9bLFPiuo1PKKTq1HE0g=
+Address = 10.0.0.1
+PostUp = ip route add 1.1.1.1
+
+[Peer]
+PublicKey = AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+`)
+  expect(result.ok).toBe(false)
+  if (result.ok) return
+
+  expect(result.error.message).toContain("unknown config key")
 })
