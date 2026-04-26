@@ -119,7 +119,7 @@ export class CookieGenerator {
     const mac1 = Blake2s.blake2s128(this.#mac1Key, msg.subarray(0, smac1))
     msg.set(mac1, smac1)
     this.#lastMAC1 = new Uint8Array(mac1)
-    this.hasLastMAC1 = true
+    this.#hasLastMAC1 = true
 
     if (Date.now() - this.#cookieSet > Handshake.CookieRefreshTime) {
       return // Leave MAC2 as zeros
@@ -135,7 +135,7 @@ export class CookieGenerator {
     const view = new DataView(msg.buffer, msg.byteOffset, msg.byteLength)
     if (view.getUint32(0, true) !== Handshake.MessageCookieReplyType) return false
 
-    if (!this.hasLastMAC1) return false
+    if (!this.#hasLastMAC1) return false
 
     const nonce = msg.slice(8, 32)
     const encryptedCookie = msg.slice(32, 64)

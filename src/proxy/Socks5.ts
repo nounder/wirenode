@@ -33,13 +33,18 @@ function readExact(socket: NNet.Socket, n: number): Promise<Buffer> {
     const chunks: Buffer[] = []
     let received = 0
 
+    const cleanup = () => {
+      socket.removeListener("data", onData)
+      socket.removeListener("error", onError)
+      socket.removeListener("close", onClose)
+    }
+
     const onData = (data: Buffer) => {
       chunks.push(data)
       received += data.length
       if (received >= n) {
-        socket.removeListener("data", onData)
-        socket.removeListener("error", onError)
-        socket.removeListener("close", onClose)
+        cleanup()
+        socket.pause()
         const buf = Buffer.concat(chunks)
         if (buf.length > n) {
           socket.unshift(buf.subarray(n))
@@ -49,20 +54,19 @@ function readExact(socket: NNet.Socket, n: number): Promise<Buffer> {
     }
 
     const onError = (err: Error) => {
-      socket.removeListener("data", onData)
-      socket.removeListener("close", onClose)
+      cleanup()
       reject(err)
     }
 
     const onClose = () => {
-      socket.removeListener("data", onData)
-      socket.removeListener("error", onError)
+      cleanup()
       reject(new Error("connection closed"))
     }
 
     socket.on("data", onData)
     socket.on("error", onError)
     socket.on("close", onClose)
+    socket.resume()
   })
 }
 

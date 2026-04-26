@@ -3,6 +3,9 @@
   "private": true,
   "type": "module",
   "module": "src/index.ts",
+  "bin": {
+    "wireproxy": "src/index.ts"
+  },
   "dependencies": {
     "@noble/ciphers": "^2.1.1",
     "@noble/curves": "^2.0.1",

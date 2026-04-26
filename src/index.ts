@@ -1,3 +1,8 @@
+#!/usr/bin/env bun
+/**
+ * wireproxy — WireGuard userspace client with SOCKS5/HTTP proxy support.
+ * Compatible with pufferffish/wireproxy configuration format.
+ */
 export { Wireproxy } from "./Wireproxy.ts"
 export { Device } from "./wireguard/Device.ts"
 export { Peer } from "./wireguard/Peer.ts"
@@ -10,43 +15,151 @@ export { VirtualTun } from "./net/VirtualTun.ts"
 if (import.meta.main) {
   const args = process.argv.slice(2)
 
-  if (args.length === 0 || args.includes("--help") || args.includes("-h")) {
-    console.log(`wirenode — WireGuard userspace client with proxy support
+  // Parse flags
+  let configPath = ""
+  let configTest = false
+  let silent = false
+  let daemon = false
+  let infoAddress = ""
+  let showVersion = false
+  let showHelp = false
 
-Usage:
-  bun run src/index.ts <config-file>       Start wireproxy with config
-  bun run src/index.ts --configtest <file> Validate config without starting
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!
+    switch (arg) {
+      case "-h":
+      case "--help":
+        showHelp = true
+        break
+      case "-v":
+      case "--version":
+        showVersion = true
+        break
+      case "-n":
+      case "--configtest":
+        configTest = true
+        break
+      case "-s":
+      case "--silent":
+        silent = true
+        break
+      case "-d":
+      case "--daemon":
+        daemon = true
+        break
+      case "-c":
+      case "--config":
+        configPath = args[++i] ?? ""
+        break
+      case "-i":
+      case "--info":
+        infoAddress = args[++i] ?? ""
+        break
+      default:
+        if (!arg.startsWith("-") && !configPath) {
+          configPath = arg
+        } else {
+          console.error(`Unknown option: ${arg}`)
+          process.exit(1)
+        }
+    }
+  }
 
-Options:
-  --help, -h       Show this help
-  --configtest     Validate configuration file only
-`)
+  if (showVersion) {
+    console.log("wireproxy (wirenode) 0.1.0")
     process.exit(0)
   }
 
-  const configTest = args.includes("--configtest")
-  const configPath = args.find((a) => !a.startsWith("-"))!
+  if (showHelp || !configPath) {
+    console.log(`wireproxy — WireGuard userspace client with proxy support
+
+Usage:
+  wireproxy -c <config-file> [options]
+  wireproxy <config-file> [options]
+
+Options:
+  -c, --config <path>    Path to configuration file
+  -n, --configtest       Validate configuration file and exit
+  -s, --silent           Suppress log output
+  -d, --daemon           Run in background (daemonize)
+  -i, --info <addr:port> Expose health/status endpoint
+  -v, --version          Show version
+  -h, --help             Show this help
+`)
+    process.exit(showHelp ? 0 : 1)
+  }
 
   const { Wireproxy } = await import("./Wireproxy.ts")
   const { parseConfig } = await import("./wireguard/Config.ts")
 
-  const configText = await Bun.file(configPath).text()
+  let configText: string
+  try {
+    configText = await Bun.file(configPath).text()
+  } catch {
+    console.error(`Cannot read config file: ${configPath}`)
+    process.exit(1)
+  }
 
   if (configTest) {
     try {
       parseConfig(configText)
       console.log("Configuration is valid.")
       process.exit(0)
-    } catch (err: any) {
-      console.error(`Configuration error: ${err.message}`)
+    } catch (err: unknown) {
+      console.error(`Configuration error: ${err instanceof Error ? err.message : err}`)
       process.exit(1)
     }
   }
 
+  if (daemon) {
+    // Fork to background using Bun.spawn
+    const child = Bun.spawn(
+      ["bun", "run", import.meta.path, "-c", configPath, "-s"],
+      {
+        stdio: ["ignore", "ignore", "ignore"],
+        env: process.env,
+      },
+    )
+    child.unref()
+    console.log(`wireproxy started in background (pid ${child.pid})`)
+    process.exit(0)
+  }
+
+  if (silent) {
+    console.log = () => {}
+    console.error = () => {}
+  }
+
   const wp = new Wireproxy(configText)
 
+  // Health/status endpoint
+  if (infoAddress) {
+    const [host, portStr] = infoAddress.split(":")
+    const port = parseInt(portStr!, 10)
+    Bun.serve({
+      hostname: host,
+      port,
+      fetch() {
+        const device = wp.getDevice()
+        const peers = device?.getPeers() ?? []
+        const status = {
+          running: !!device,
+          peers: peers.map((p) => ({
+            publicKey: p.publicKeyHex.slice(0, 16) + "...",
+            endpoint: p.endpoint,
+            lastHandshakeAttempt: p.lastHandshakeAttempt,
+          })),
+        }
+        return new Response(JSON.stringify(status, null, 2), {
+          headers: { "Content-Type": "application/json" },
+        })
+      },
+    })
+    if (!silent) console.log(`Health endpoint on ${infoAddress}`)
+  }
+
   process.on("SIGINT", async () => {
-    console.log("\nShutting down...")
+    if (!silent) console.log("\nShutting down...")
     await wp.stop()
     process.exit(0)
   })
@@ -58,8 +171,8 @@ Options:
 
   try {
     await wp.start()
-  } catch (err: any) {
-    console.error(`Failed to start: ${err.message}`)
+  } catch (err: unknown) {
+    console.error(`Failed to start: ${err instanceof Error ? err.message : err}`)
     process.exit(1)
   }
 }

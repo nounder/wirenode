@@ -29,6 +29,7 @@ export function bridge(socket: NNet.Socket, remote: StreamPair): void {
   socket.on("data", (chunk: Buffer) => {
     writer.write(new Uint8Array(chunk)).catch(() => cleanup())
   })
+  socket.resume()
   socket.on("end", () => {
     writer.close().catch(() => { })
   })
