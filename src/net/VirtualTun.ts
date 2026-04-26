@@ -1,8 +1,8 @@
-import * as NDgram from "node:dgram"
 import * as NDns from "node:dns"
 import { Device } from "../wireguard/Device.ts"
 import { Peer } from "../wireguard/Peer.ts"
 import { TcpStack, TcpConnection } from "./TcpStack.ts"
+import { UdpStack, type UdpSession } from "./UdpStack.ts"
 import type { ResolveConfig } from "../wireguard/Config.ts"
 
 export interface VirtualTunOptions {
@@ -16,25 +16,27 @@ export class VirtualTun {
   readonly device: Device
   readonly addresses: string[]
   readonly dns: string[]
-  #resolveStrategy: string
+  #resolveStrategy: ResolveConfig["resolveStrategy"]
   #tcpStack: TcpStack | null = null
+  #udpStack: UdpStack | null = null
 
   constructor(options: VirtualTunOptions) {
     this.device = options.device
     this.addresses = options.addresses
     this.dns = options.dns
-    this.resolveStrategy = options.resolveConfig.resolveStrategy
+    this.#resolveStrategy = options.resolveConfig.resolveStrategy
 
     // Auto-detect resolve strategy — prefer IPv4 since our TCP stack only supports IPv4
-    if (this.resolveStrategy === "auto") {
+    if (this.#resolveStrategy === "auto") {
       const hasV4 = this.addresses.some((a) => !a.includes(":"))
-      this.resolveStrategy = hasV4 ? "ipv4" : "ipv6"
+      this.#resolveStrategy = hasV4 ? "ipv4" : "ipv6"
     }
 
     // Initialize userspace TCP/IP stack with our tunnel IP
     const ipv4Addr = this.addresses.find((a) => !a.includes(":"))
     if (ipv4Addr) {
-      this.tcpStack = new TcpStack(this.device, ipv4Addr)
+      this.#tcpStack = new TcpStack(this.device, ipv4Addr)
+      this.#udpStack = new UdpStack(this.device, ipv4Addr)
     }
   }
 
@@ -44,7 +46,7 @@ export class VirtualTun {
     if (hostname.includes(":")) return hostname
 
     return new Promise((resolve, reject) => {
-      const family = this.resolveStrategy === "ipv4" ? 4 : 6
+      const family = this.#resolveStrategy === "ipv4" ? 4 : 6
       NDns.lookup(hostname, { family, all: false }, (err, address) => {
         if (err) {
           // Fallback to any
@@ -72,12 +74,12 @@ export class VirtualTun {
       await this.#ensureHandshake(peer)
     }
 
-    if (!this.tcpStack) {
+    if (!this.#tcpStack) {
       throw new Error("no IPv4 address configured — TCP stack unavailable")
     }
 
     // Connect through the userspace TCP/IP stack over the WireGuard tunnel
-    const conn = this.tcpStack.connect(resolved, port, peer)
+    const conn = this.#tcpStack.connect(resolved, port, peer)
 
     // Wait for TCP handshake with timeout
     const timeout = new Promise<never>((_, reject) =>
@@ -91,8 +93,27 @@ export class VirtualTun {
     return conn
   }
 
-  dialUDP(_target: string) {
-    return NDgram.createSocket("udp4")
+  async dialUdp(target: string): Promise<UdpSession> {
+    const { host, port } = parseHostPort(target)
+    const resolved = await this.resolve(host)
+    if (resolved.includes(":")) {
+      throw new Error("UDP over WireGuard currently supports IPv4 targets only")
+    }
+
+    const peer = this.#findPeerForAddress(resolved)
+    if (!peer?.endpoint) {
+      throw new Error(`no peer found for UDP target ${target}`)
+    }
+
+    if (!peer.currentKeypair) {
+      await this.#ensureHandshake(peer)
+    }
+
+    if (!this.#udpStack) {
+      throw new Error("no IPv4 address configured — UDP stack unavailable")
+    }
+
+    return this.#udpStack.connect(resolved, port, peer)
   }
 
   #ensureHandshake(peer: Peer): Promise<void> {
@@ -146,6 +167,24 @@ export class VirtualTun {
   }
 
   destroy(): void {
-    this.tcpStack?.destroy()
+    this.#tcpStack?.destroy()
+    this.#udpStack?.destroy()
+  }
+}
+
+function parseHostPort(addr: string): { host: string; port: number } {
+  const idx = addr.lastIndexOf(":")
+  if (idx <= 0 || idx === addr.length - 1) {
+    throw new Error(`invalid host:port address: ${addr}`)
+  }
+
+  const port = parseInt(addr.slice(idx + 1), 10)
+  if (!Number.isInteger(port) || port < 0 || port > 65535) {
+    throw new Error(`invalid port in address: ${addr}`)
+  }
+
+  return {
+    host: addr.slice(0, idx),
+    port,
   }
 }
